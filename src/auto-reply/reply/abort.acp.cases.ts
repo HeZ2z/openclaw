@@ -209,9 +209,9 @@ export function registerAbortAcpCases({
     expect(getFollowupQueueDepth(acpSessionKey)).toBe(0);
     // One Stop selected both conversations; each keeps its own review identity.
     expect(stopReview).toHaveBeenCalledOnce();
-    const reviewCall = stopReview.mock.calls[0]![0] as {
-      sessions: { agentId?: string; sessionKey?: string }[];
-    };
+    const reviewCall = stopReview.mock.calls[0]![0] as Parameters<
+      typeof stopSkillExperienceReview
+    >[0];
     expect(reviewCall.sessions).toEqual(
       expect.arrayContaining([
         { agentId: "main", sessionKey: sourceSessionKey },
