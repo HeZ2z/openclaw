@@ -118,12 +118,13 @@ async function loadSessionFileRoot(loaded: GatewaySessionEntryRead) {
     loaded.entry,
   );
   const { spawnedCwd, root, diffCwd } = fileWorkspace;
-  const workspaceTarget = resolveFileWorkspaceTarget(loaded.entry.worktree?.id, root);
+  const fileRoot = resolveFileRoot({ root, spawnedCwd });
+  const workspaceTarget = resolveFileWorkspaceTarget(loaded.entry.worktree?.id, root, fileRoot);
   return {
     ...loaded,
     fileWorkspace,
     root,
-    fileRoot: resolveFileRoot({ root, spawnedCwd }),
+    fileRoot,
     diffCwd,
     workspaceIdentity: workspaceTarget.hashScope,
     workspaceId: workspaceTarget.workspaceId,

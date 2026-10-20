@@ -1,3 +1,4 @@
+import path from "node:path";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { sessionFilesError } from "./session-files-errors.js";
 import type { RespondFn } from "./types.js";
@@ -12,13 +13,28 @@ export type SessionFileWorkspaceTarget = {
   workspaceId: string | undefined;
 };
 
-/** Resolves the exact session workspace target a file token belongs to. */
+/**
+ * Resolves the exact session workspace target a file token belongs to.
+ *
+ * Relative file paths resolve against `fileRoot`, which can change while the
+ * managed workspace root and worktree id survive a cwd-only reset. Bind every
+ * directory that selects the file so that reset cannot retarget a draft.
+ */
 export function resolveFileWorkspaceTarget(
   worktreeId: string | undefined,
   root: string | undefined,
+  fileRoot: string | undefined,
 ): SessionFileWorkspaceTarget {
-  const hashScope = worktreeId && root ? `${worktreeId}\0${root}` : undefined;
-  const target = hashScope ?? root;
+  // Normalize both directories so an equivalent spelling of the same path keeps
+  // the same target instead of stranding a draft across a reset.
+  const resolvedRoot = root ? path.resolve(root) : undefined;
+  const resolvedFileRoot = fileRoot ? path.resolve(fileRoot) : undefined;
+  const directories =
+    resolvedRoot && resolvedFileRoot && resolvedFileRoot !== resolvedRoot
+      ? `${resolvedRoot}\0${resolvedFileRoot}`
+      : resolvedRoot;
+  const hashScope = worktreeId && directories ? `${worktreeId}\0${directories}` : undefined;
+  const target = hashScope ?? directories;
   return { hashScope, workspaceId: target ? sha256Hex(target) : undefined };
 }
 

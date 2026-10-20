@@ -442,4 +442,74 @@ describe("sessions.files for managed-worktree sessions", () => {
       expect(freshHash).not.toBe(staleHash);
     });
   });
+
+  it("refuses a stale save when a cwd-only reset moves the file lookup root", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const workspaceRoot = path.join(state.workspaceDir, "repo");
+      const firstCwd = path.join(workspaceRoot, "a");
+      const replacementCwd = path.join(workspaceRoot, "b");
+      fs.mkdirSync(firstCwd, { recursive: true });
+      fs.mkdirSync(replacementCwd, { recursive: true });
+      fs.writeFileSync(path.join(firstCwd, "README.md"), "base\n");
+      fs.writeFileSync(path.join(replacementCwd, "README.md"), "base\n");
+      const entry = {
+        sessionId: "cwd-reset-session",
+        lifecycleRevision: "rev-1",
+        updatedAt: 1,
+        spawnedWorkspaceDir: workspaceRoot,
+        spawnedCwd: firstCwd,
+        worktree: { id: "wt-cwd", branch: "openclaw/cwd", repoRoot: workspaceRoot },
+      };
+      await sessions.upsertSessionEntryCore({ agentId: "main", sessionKey: key }, entry);
+
+      const first = await dispatch("sessions.files.get", "README.md");
+      expect(first.mock.calls[0]?.[0]).toBe(true);
+      const staleHash = first.mock.calls[0]?.[1]?.file?.hash;
+      const staleWorkspaceId = first.mock.calls[0]?.[1]?.workspaceId;
+      expect(staleHash).toEqual(expect.any(String));
+      expect(staleWorkspaceId).toEqual(expect.any(String));
+
+      // A supported cwd-only reset keeps the workspace root and worktree id
+      // while changing the directory relative requests resolve against.
+      await sessions.upsertSessionEntryCore(
+        { agentId: "main", sessionKey: key },
+        { ...entry, updatedAt: 2, spawnedCwd: replacementCwd },
+      );
+      sessionChanges.emit({ sessionKey: key });
+
+      // Byte-identical content in the replacement cwd must refuse both the
+      // plain stale hash and the old workspace identity.
+      const hashOnly = await dispatch("sessions.files.set", "README.md", null, {
+        content: "stale draft\n",
+        expectedHash: staleHash,
+      });
+      expect(hashOnly.mock.calls[0]?.[0]).toBe(false);
+      expect(hashOnly.mock.calls[0]?.[2]).toMatchObject({
+        details: { type: "session_file_conflict" },
+      });
+      const staleIdentity = await dispatch("sessions.files.set", "README.md", null, {
+        content: "stale draft\n",
+        expectedHash: staleHash,
+        workspaceId: staleWorkspaceId,
+      });
+      expect(staleIdentity.mock.calls[0]?.[0]).toBe(false);
+      expect(staleIdentity.mock.calls[0]?.[2]).toMatchObject({
+        details: { type: "session_file_conflict", reason: "workspace_changed" },
+      });
+      expect(fs.readFileSync(path.join(replacementCwd, "README.md"), "utf8")).toBe("base\n");
+
+      // Reopening the replacement cwd's file adopts its target and saves.
+      const fresh = await dispatch("sessions.files.get", "README.md");
+      expect(fresh.mock.calls[0]?.[1]?.workspaceId).not.toBe(staleWorkspaceId);
+      const saved = await dispatch("sessions.files.set", "README.md", null, {
+        content: "reopened save\n",
+        expectedHash: fresh.mock.calls[0]?.[1]?.file?.hash,
+        workspaceId: fresh.mock.calls[0]?.[1]?.workspaceId,
+      });
+      expect(saved.mock.calls[0]?.[0]).toBe(true);
+      expect(fs.readFileSync(path.join(replacementCwd, "README.md"), "utf8")).toBe(
+        "reopened save\n",
+      );
+    });
+  });
 });

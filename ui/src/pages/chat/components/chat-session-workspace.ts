@@ -183,13 +183,44 @@ export function refreshSessionWorkspace(state: SessionWorkspaceHost, refreshFile
   }
 }
 
+/**
+ * Rebuilds a Files-row request path beneath the current workspace root.
+ *
+ * Files rows address absolute paths under the root they were listed in. A chat
+ * reset can replace that root, so recovery refreshes the listing and re-anchors
+ * the same row rather than reusing the old absolute path, which would miss the
+ * replacement workspace or read a stale checkout that is still on disk.
+ */
+async function replacementWorkspaceRequestPath(params: {
+  state: SessionWorkspaceHost;
+  sessionKey: string;
+  agentId: string | undefined;
+  workspacePath: string;
+}): Promise<string | null> {
+  const listing = await params.state.sessions.listFiles(params.sessionKey, {
+    path: "",
+    ...(params.agentId ? { agentId: params.agentId } : {}),
+  });
+  const root = listing?.root;
+  return root ? workspaceBrowserFilePath(root, params.workspacePath) : null;
+}
+
 function openFile(
   state: SessionWorkspaceHost,
   workspace: SessionWorkspaceState,
   path: string,
-  opts: { line?: number | null; requestPath?: string; sessionKey?: string } = {},
+  opts: {
+    line?: number | null;
+    requestPath?: string;
+    workspacePath?: string;
+    sessionKey?: string;
+  } = {},
 ) {
   const requestPath = opts.requestPath ?? path;
+  // A Files row can be re-anchored to the replacement workspace during
+  // recovery, so every later operation reads the current target, not the
+  // absolute path captured when the tab opened.
+  let activeRequestPath = requestPath;
   const sessionKey = opts.sessionKey ?? workspace.sessionKey;
   const agentId = opts.sessionKey
     ? parseAgentSessionKey(opts.sessionKey)?.agentId
@@ -242,7 +273,7 @@ function openFile(
       const download = (signal: AbortSignal) =>
         downloadSessionFile(
           state,
-          { sessionKey: result.sessionKey, agentId, path: requestPath },
+          { sessionKey: result.sessionKey, agentId, path: activeRequestPath },
           signal,
         );
       if (file.previewKind === "image") {
@@ -293,7 +324,7 @@ function openFile(
               try {
                 const saved = await state.sessions.setFile(
                   result.sessionKey,
-                  requestPath,
+                  activeRequestPath,
                   content,
                   {
                     agentId,
@@ -341,7 +372,20 @@ function openFile(
               }
             },
             fetchLatest: async () => {
-              const latest = await state.sessions.getFile(result.sessionKey, requestPath, {
+              let target = activeRequestPath;
+              if (opts.workspacePath) {
+                const replacement = await replacementWorkspaceRequestPath({
+                  state,
+                  sessionKey: result.sessionKey,
+                  agentId,
+                  workspacePath: opts.workspacePath,
+                });
+                if (!replacement) {
+                  return null;
+                }
+                target = replacement;
+              }
+              const latest = await state.sessions.getFile(result.sessionKey, target, {
                 agentId,
               });
               const latestFile = latest?.file;
@@ -352,6 +396,9 @@ function openFile(
               ) {
                 return null;
               }
+              // Only a successful read proves the replacement target exists;
+              // a failed recovery keeps the old path (and draft) protected.
+              activeRequestPath = target;
               return {
                 content: latestFile.content,
                 hash: latestFile.hash,
@@ -587,7 +634,11 @@ export function createSessionWorkspaceProps(
       // Keep the origin explicit so a nested cwd cannot shadow the selected browser file.
       const opts =
         origin === "workspace"
-          ? { requestPath: workspaceBrowserFilePath(workspace.list?.root, path) }
+          ? {
+              requestPath: workspaceBrowserFilePath(workspace.list?.root, path),
+              // Kept so recovery can re-anchor this row beneath a replacement root.
+              workspacePath: path,
+            }
           : {};
       openFile(state, workspace, path, opts);
     },

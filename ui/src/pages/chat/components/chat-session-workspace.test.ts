@@ -505,6 +505,114 @@ describe("openSessionWorkspaceFile", () => {
     });
   });
 
+  it("re-anchors a Files-row tab to the replacement workspace on recovery", async () => {
+    const owner = "agent:main:current";
+    const browserPath = "README.md";
+    let root = "/worktree-a";
+    const getFile = vi.fn<SessionWorkspaceHost["sessions"]["getFile"]>(
+      async (_sessionKey, requestedPath) => {
+        if (requestedPath === "/worktree-b/README.md") {
+          return {
+            sessionKey: owner,
+            root,
+            workspaceId: "workspace-b",
+            file: textFile("README.md", "replacement\n", {
+              workspacePath: "README.md",
+              hash: "hash-b",
+            }),
+          };
+        }
+        return {
+          sessionKey: owner,
+          root: "/worktree-a",
+          workspaceId: "workspace-a",
+          file: textFile("README.md", "base\n", { workspacePath: "README.md", hash: "hash-a" }),
+        };
+      },
+    );
+    const setFile = vi
+      .fn<SessionWorkspaceHost["sessions"]["setFile"]>()
+      .mockRejectedValueOnce(
+        new GatewayRequestError({
+          code: "INVALID_REQUEST",
+          message: "session workspace changed since it was read",
+          details: {
+            type: "session_file_conflict",
+            reason: "workspace_changed",
+            path: browserPath,
+          },
+        }),
+      )
+      .mockResolvedValueOnce({
+        sessionKey: owner,
+        root: "/worktree-b",
+        file: workspaceFile("/worktree-b/README.md", {
+          content: "after\n",
+          hash: "hash-c",
+          kind: "modified",
+        }),
+      });
+    const listFiles = vi.fn(async () => ({ sessionKey: owner, root, files: [] }));
+    const state: SessionWorkspaceHost = createHost({
+      client: { request: vi.fn().mockResolvedValue({ artifacts: [] }) },
+      connectionEpoch: 1,
+      handleOpenSidebar: createSidebarContentRecorder(),
+      hello: gatewayHelloForMethods(["sessions.files.set"]),
+      sessions: createSessionCapabilityFixture({ getFile, listFiles, setFile }),
+    });
+    workspaceProps(state, { expanded: true });
+    await vi.waitFor(() => expect(workspaceProps(state).list?.root).toBe("/worktree-a"));
+
+    const opened = nextWorkspaceUpdate(
+      state,
+      () => state.sessionWorkspaceState?.previews.at(-1)?.content.kind === "file",
+    );
+    workspaceProps(state).onOpenFile(browserPath, "workspace");
+    await opened;
+    const preview = await loadedSidebarContent(state);
+    if (preview.kind !== "file" || !preview.edit) {
+      throw new Error("Expected an editable Files-row file");
+    }
+    expect(getFile).toHaveBeenCalledExactlyOnceWith(owner, "/worktree-a/README.md", {
+      agentId: "main",
+    });
+    expect(preview.edit.workspaceId).toBe("workspace-a");
+
+    await expect(
+      preview.edit.save({
+        content: "local draft\n",
+        expectedHash: "hash-a",
+        workspaceId: "workspace-a",
+      }),
+    ).resolves.toEqual({ ok: false, code: "workspace-changed" });
+
+    // A replacement workspace discards the old root. Recovery must refresh the
+    // listing and reopen the same row beneath the new root; the captured
+    // absolute path would otherwise miss it or read the stale checkout.
+    root = "/worktree-b";
+    await expect(preview.edit.fetchLatest()).resolves.toEqual({
+      content: "replacement\n",
+      hash: "hash-b",
+      workspaceId: "workspace-b",
+      editable: true,
+    });
+    expect(getFile).toHaveBeenLastCalledWith(owner, "/worktree-b/README.md", { agentId: "main" });
+    expect(listFiles).toHaveBeenCalledTimes(2);
+
+    await expect(
+      preview.edit.save({
+        content: "after\n",
+        expectedHash: "hash-b",
+        workspaceId: "workspace-b",
+      }),
+    ).resolves.toEqual({ ok: true, hash: "hash-c" });
+    expect(setFile).toHaveBeenLastCalledWith(owner, "/worktree-b/README.md", "after\n", {
+      agentId: "main",
+      expectedHash: "hash-b",
+      workspaceId: "workspace-b",
+    });
+  });
+
   it("preserves existing Review content when the Gateway is disconnected", () => {
     const existingContent = {
       kind: "markdown",
