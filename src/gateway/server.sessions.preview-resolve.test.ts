@@ -432,3 +432,105 @@ test("sessions.resolve by key respects spawnedBy visibility filters", async () =
     "No session found: agent:main:subagent:shared-child-key-filter",
   );
 });
+
+test("session preview reader recovers visible rows behind a long hidden tail", async () => {
+  const scope = await seedPreviewTail("sess-preview-deep-hidden-tail", [
+    ...Array.from({ length: 64 }, (_, index) => ({
+      role: "assistant",
+      content: `visible ${String(index)}`,
+    })),
+    ...Array.from({ length: 1500 }, (_, index) => ({
+      role: "toolResult",
+      content: `tool ${String(index)}`,
+    })),
+  ]);
+  const items = await readSessionPreviewItemsFromTranscriptAsync(scope, 12, 120);
+  expect(items).toEqual(
+    Array.from({ length: 12 }, (_, index) => ({
+      role: "assistant",
+      text: `visible ${String(52 + index)}`,
+    })),
+  );
+});
+
+test("session preview reader returns short visible history behind a long hidden tail", async () => {
+  const scope = await seedPreviewTail("sess-preview-short-visible", [
+    { role: "assistant", content: "only visible" },
+    ...Array.from({ length: 1500 }, (_, index) => ({
+      role: "toolResult",
+      content: `tool ${String(index)}`,
+    })),
+  ]);
+  const items = await readSessionPreviewItemsFromTranscriptAsync(scope, 12, 120);
+  expect(items).toEqual([{ role: "assistant", text: "only visible" }]);
+});
+
+test("session preview owner stops at its explicit tail scan ceiling", async () => {
+  const sessionId = "sess-preview-scan-ceiling";
+  const scope = await seedPreviewTail(sessionId, [
+    ...Array.from({ length: 64 }, (_, index) => ({
+      role: "assistant",
+      content: `visible ${String(index)}`,
+    })),
+    ...Array.from({ length: 1500 }, (_, index) => ({
+      role: "toolResult",
+      content: `tool ${String(index)}`,
+    })),
+  ]);
+  const { path: databasePath } = resolveUnsuffixedSqliteTargetFromSessionStorePath(scope.storePath);
+  const { readSessionPreviewItemsReadOnly } =
+    await import("./session-transcript-preview-reader.js");
+  const { SESSION_PREVIEW_SCAN_MAX_EVENTS } =
+    await import("./session-transcript-preview-bounds.js");
+  const historyQuery = await import("../config/sessions/session-accessor.sqlite-history-query.js");
+  const readPage = historyQuery.readRecentSessionTranscriptHistoryEventsFromProjection;
+  const calls: Array<{ maxMessages: number; events: number }> = [];
+  const spy = vi
+    .spyOn(historyQuery, "readRecentSessionTranscriptHistoryEventsFromProjection")
+    .mockImplementation((projection, options) => {
+      const page = readPage(projection, options);
+      calls.push({ maxMessages: options.maxMessages, events: page.events.length });
+      return page;
+    });
+  try {
+    const items = readSessionPreviewItemsReadOnly({
+      kind: "session-preview",
+      database: { agentId: "main", path: databasePath },
+      target: { agentId: "main", sessionId, sessionKey: "agent:main:main" },
+      maxItems: 12,
+      maxChars: 120,
+    });
+    expect(items.map((item) => item.text)).toEqual(
+      Array.from({ length: 12 }, (_, index) => `visible ${String(52 + index)}`),
+    );
+    expect(calls.length).toBeLessThanOrEqual(4);
+    expect(calls.every((call) => call.maxMessages <= SESSION_PREVIEW_SCAN_MAX_EVENTS)).toBe(true);
+    expect(calls.at(-1)?.maxMessages).toBe(SESSION_PREVIEW_SCAN_MAX_EVENTS);
+    // Widened windows overlap, but the whole read stays within two scan ceilings.
+    expect(calls.reduce((total, call) => total + call.events, 0)).toBeLessThanOrEqual(
+      SESSION_PREVIEW_SCAN_MAX_EVENTS * 2,
+    );
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("Talk model-context preview shares the bounded hidden-tail recovery", async () => {
+  const scope = await seedPreviewTail("sess-preview-talk-hidden-tail", [
+    ...Array.from({ length: 64 }, (_, index) => ({
+      role: "assistant",
+      content: `visible ${String(index)}`,
+    })),
+    ...Array.from({ length: 1500 }, (_, index) => ({
+      role: "toolResult",
+      content: `tool ${String(index)}`,
+    })),
+  ]);
+  const items = await readSessionPreviewItemsFromTranscriptAsync(scope, 16, 800, "model-context");
+  expect(items).toEqual(
+    Array.from({ length: 16 }, (_, index) => ({
+      role: "assistant",
+      text: `visible ${String(48 + index)}`,
+    })),
+  );
+});
