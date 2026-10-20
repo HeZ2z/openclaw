@@ -447,9 +447,13 @@ export function registerChatSourceMediaTests(fixture: SourceMediaFixture) {
               ...(reason === "owned colliding key" ? { transcriptOwner: true } : {}),
             }),
           ]);
+          const transcriptOwned = reason === "owned colliding key";
           const broadcast = await fixture.send({
             idempotencyKey: "idem-source-rewrite-refusal",
             message: "hello from codex",
+            // An owned mirror is already published by its delivery tool, so a refused
+            // rewrite must not produce another terminal (or a media-failure placeholder).
+            ...(transcriptOwned ? { expectBroadcast: false } : {}),
           });
           expect(JSON.stringify(getMessageContent(broadcast))).not.toContain(
             "/api/chat/media/outgoing/",
