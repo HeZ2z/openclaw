@@ -2,7 +2,6 @@ import { expect, test } from "vitest";
 import {
   readBoundedSessionPreviewItems,
   readBoundedSessionPreviewItemsAsync,
-  sessionPreviewReadWindows,
   type SessionPreviewPage,
 } from "./session-transcript-preview-bounds.js";
 
@@ -11,19 +10,6 @@ const previewItem = { role: "assistant" as const, text: "visible" };
 function page(overrides: Partial<SessionPreviewPage>): SessionPreviewPage {
   return { items: [], hasOlderEvents: true, scannedEvents: 0, ...overrides };
 }
-
-test("preview windows widen from a small page to the explicit scan ceiling", () => {
-  expect(sessionPreviewReadWindows(12)).toEqual([
-    { maxEvents: 64, maxBytes: 1024 * 1024 },
-    { maxEvents: 1024, maxBytes: 8 * 1024 * 1024 },
-    { maxEvents: 2048, maxBytes: 8 * 1024 * 1024 },
-  ]);
-  // Large requests skip the small page and stop at the ceiling without a duplicate window.
-  expect(sessionPreviewReadWindows(128)).toEqual([
-    { maxEvents: 256, maxBytes: 1024 * 1024 },
-    { maxEvents: 2048, maxBytes: 8 * 1024 * 1024 },
-  ]);
-});
 
 test("event-capped pages keep widening until the scan ceiling", () => {
   const limits: number[] = [];

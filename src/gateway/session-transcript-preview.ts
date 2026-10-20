@@ -1,3 +1,4 @@
+import { readSessionManagerBoundedSelection } from "../agents/sessions/session-manager-bounded-selection.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.js";
 import {
@@ -99,16 +100,8 @@ function readSessionModelPreviewItems(
   maxChars: number,
 ): Promise<SessionPreviewItem[]> {
   return readBoundedSessionPreviewItemsAsync(maxItems, async ({ maxEvents, maxBytes }) => {
-    let truncated = false;
-    let loadedEvents = maxEvents;
-    const manager = await SessionManager.openBoundedAsync(target, {
-      maxEvents,
-      maxBytes,
-      onTruncated: ({ loadedEvents: truncatedEvents }) => {
-        truncated = true;
-        loadedEvents = truncatedEvents;
-      },
-    });
+    const manager = await SessionManager.openBoundedAsync(target, { maxEvents, maxBytes });
+    const selection = readSessionManagerBoundedSelection(manager);
     return {
       items: buildSessionPreviewItems(
         manager.buildSessionContext().messages,
@@ -116,9 +109,9 @@ function readSessionModelPreviewItems(
         maxChars,
         "model-context",
       ),
-      hasOlderEvents: truncated,
-      // A truncated page below the event cap was byte-limited under this window's budget.
-      scannedEvents: loadedEvents,
+      hasOlderEvents: selection?.truncated ?? false,
+      // A page below its event cap was byte-limited under this window's budget.
+      scannedEvents: selection?.selectedEvents ?? 0,
     };
   });
 }

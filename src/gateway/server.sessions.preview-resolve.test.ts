@@ -2,6 +2,8 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
+import { readSessionManagerBoundedSelection } from "../agents/sessions/session-manager-bounded-selection.js";
+import { SessionManager } from "../agents/sessions/session-manager.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
 import {
@@ -526,4 +528,44 @@ test("Talk model-context preview shares the bounded hidden-tail recovery", async
       text: `visible ${String(48 + index)}`,
     })),
   );
+});
+
+test("Talk model-context stops when the byte budget caps the recovery page", async () => {
+  const sessionId = "sess-preview-talk-byte-cap";
+  // 1,023 tiny rows fit the 8 MiB recovery budget; the older 5 MiB row cannot.
+  const scope = await seedPreviewTail(sessionId, [
+    ...Array.from({ length: 64 }, (_, index) => ({
+      role: "assistant",
+      content: `visible ${String(index)}`,
+    })),
+    { role: "toolResult", content: "h".repeat(5 * 1024 * 1024) },
+    ...Array.from({ length: 1023 }, (_, index) => ({
+      role: "toolResult",
+      content: `${String(index)}${"t".repeat(4096)}`,
+    })),
+  ]);
+  const opens: number[] = [];
+  const managers: SessionManager[] = [];
+  const openBoundedAsync = SessionManager.openBoundedAsync.bind(SessionManager);
+  const spy = vi
+    .spyOn(SessionManager, "openBoundedAsync")
+    .mockImplementation(async (target, options) => {
+      const manager = await openBoundedAsync(target, options);
+      opens.push(options.maxEvents);
+      managers.push(manager);
+      return manager;
+    });
+  try {
+    const items = await readSessionPreviewItemsFromTranscriptAsync(scope, 12, 120, "model-context");
+    // No visible rows are inside the byte budget; the bounded read must not repeat it.
+    expect(items).toEqual([]);
+    expect(opens).toEqual([64, 1024]);
+    // The header is not a selected row: 1,023 is below the 1,024-event cap, so bytes stopped it.
+    expect(readSessionManagerBoundedSelection(managers[1]!)).toEqual({
+      selectedEvents: 1023,
+      truncated: true,
+    });
+  } finally {
+    spy.mockRestore();
+  }
 });
