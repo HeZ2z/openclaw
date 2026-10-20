@@ -15,7 +15,10 @@ import {
   renderMattermostProviderPickerView,
   resolveMattermostModelPickerCurrentModel,
 } from "./model-picker.js";
-import { authorizeMattermostCommandInvocation } from "./monitor-auth.js";
+import {
+  authorizeMattermostCommandInvocation,
+  MATTERMOST_PAIRING_QUEUE_FULL_TEXT,
+} from "./monitor-auth.js";
 import { buildMattermostModelPickerSelectMessageSid } from "./monitor-context.js";
 import { buildMattermostEventPlan } from "./monitor-event-plan.js";
 import { dispatchMattermostInteractionReply } from "./monitor-interaction-dispatch.js";
@@ -77,8 +80,8 @@ export function createMattermostModelPickerInteractionHandler(
           id: params.payload.user_id,
           meta: { name: params.userName },
         });
-        // A full pending queue returns an empty code and stores no request; fall
-        // through to the generic denial instead of an approve command with no code.
+        // A full pending queue returns an empty code and stores no request. Deny with
+        // recovery guidance instead of an approve command that cannot succeed.
         if (code) {
           return {
             ephemeral_text: core.channel.pairing.buildPairingReply({
@@ -88,6 +91,7 @@ export function createMattermostModelPickerInteractionHandler(
             }),
           };
         }
+        return { ephemeral_text: MATTERMOST_PAIRING_QUEUE_FULL_TEXT };
       }
       const denyText =
         auth.denyReason === "unknown-channel"

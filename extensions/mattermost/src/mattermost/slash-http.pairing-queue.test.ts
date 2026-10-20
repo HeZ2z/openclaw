@@ -16,6 +16,7 @@ import type { OpenClawConfig, RuntimeEnv } from "../../runtime-api.js";
 import { setMattermostRuntime } from "../runtime.js";
 import type { ResolvedMattermostAccount } from "./accounts.js";
 import type { MattermostChannel, MattermostClient } from "./client.js";
+import { MATTERMOST_PAIRING_QUEUE_FULL_TEXT } from "./monitor-auth.js";
 
 const clientMocks = vi.hoisted(() => ({
   createMattermostClient: vi.fn(),
@@ -184,6 +185,6 @@ it.each([
       code,
     });
   } else {
-    expect(text).toBe("Unauthorized.");
+    expect(text).toBe(MATTERMOST_PAIRING_QUEUE_FULL_TEXT);
   }
 });

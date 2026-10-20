@@ -2,6 +2,7 @@ import { expectPairingReplyText } from "openclaw/plugin-sdk/channel-test-helpers
 import { buildPairingReply } from "openclaw/plugin-sdk/conversation-runtime";
 import type * as SessionTranscriptRuntime from "openclaw/plugin-sdk/session-transcript-runtime";
 import { expect, it, vi } from "vitest";
+import { MATTERMOST_PAIRING_QUEUE_FULL_TEXT } from "./monitor-auth.js";
 
 const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
@@ -33,7 +34,8 @@ vi.mock("./model-picker.js", async (importOriginal) => ({
   resolveMattermostModelPickerCurrentModel: async () => "openai/gpt-5.4",
 }));
 
-vi.mock("./monitor-auth.js", () => ({
+vi.mock("./monitor-auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./monitor-auth.js")>()),
   authorizeMattermostCommandInvocation: mocks.authorize,
 }));
 
@@ -294,7 +296,7 @@ it.each([
     });
     expect(buildReply).toHaveBeenCalledOnce();
   } else {
-    expect(response).toEqual({ ephemeral_text: "Unauthorized." });
+    expect(response).toEqual({ ephemeral_text: MATTERMOST_PAIRING_QUEUE_FULL_TEXT });
     expect(buildReply).not.toHaveBeenCalled();
   }
   expect(mocks.dispatch).not.toHaveBeenCalled();
