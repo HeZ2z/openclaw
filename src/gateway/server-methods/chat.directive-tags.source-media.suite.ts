@@ -269,6 +269,65 @@ export function registerChatSourceMediaTests(fixture: SourceMediaFixture) {
     },
   );
 
+  it("keeps a captioned owned media reply out of the final broadcast", async () => {
+    await withTranscriptFixtureState("openclaw-chat-send-owned-caption-media-", async (dir) => {
+      const { cfg, scope } = fixture.session();
+      const sessionKey = "agent:main:main";
+      const runId = "owned-caption-media-run";
+      const caption = "The attachment is ready.";
+      const fileName = "owned-caption.png";
+      const mediaUrl = path.join(dir, fileName);
+      writeSavedPng(dir, fileName);
+      const sharedMedia = {
+        mediaUrl,
+        mediaUrls: [mediaUrl],
+        attachments: [{ name: fileName, mimeType: "image/png" }],
+        trustedLocalMedia: true,
+      };
+      // The message tool already persisted and published this row. Its recorded key is not
+      // the fallback key the source-reply mirror derives, so the finalizer cannot resolve a
+      // committed row for it.
+      await persistInternalSourceReply({
+        cfg,
+        agentId: "main",
+        sessionKey,
+        expectedSessionId: scope.sessionId,
+        idempotencyKey: `${runId}:message-tool:send-0`,
+        payload: { ...sharedMedia, text: caption },
+        runId,
+        sourceReplyFinal: true,
+      });
+      fixture.stageMediaPath(mediaUrl, "image/png");
+      const source = buildSourceReplyPayloadState({
+        sessionKey,
+        agentId: "main",
+        payloads: [{ ...sharedMedia, text: caption, transcriptOwner: true }],
+        runId,
+      });
+      setAgentRunReplies(
+        source.replyItems.map((reply) => ({ kind: "final" as const, payload: reply })),
+      );
+
+      const broadcast = await fixture.send({
+        idempotencyKey: runId,
+        message: "Send the caption with the attachment.",
+        expectBroadcast: false,
+      });
+
+      expect(broadcast).toBeUndefined();
+      const assistantEntries = await readActiveAssistantTranscriptMessages();
+      expect(assistantEntries).toHaveLength(1);
+      expect(assistantEntries[0]?.idempotencyKey).toBe(`${runId}:message-tool:send-0`);
+      const content = getMessageContent({ message: assistantEntries[0] });
+      expect(content.filter((block) => block.type === "image")).toHaveLength(1);
+      expect(JSON.stringify(content)).toContain("/api/chat/media/outgoing/");
+      expect(JSON.stringify(content)).not.toContain(mediaUrl);
+      expect(JSON.stringify(assistantEntries[0])).not.toContain(
+        "Media reply could not be displayed.",
+      );
+    });
+  });
+
   it("backs source reply media with an equivalent deduped delivery mirror", async () => {
     await withTranscriptFixtureState(
       "openclaw-chat-send-agent-source-reply-deduped-",

@@ -78,6 +78,9 @@ type ChatSendAgentReplyFinalization =
  * broadcast the reply again. Media rewriting still runs for these payloads.
  */
 function isTranscriptOwnedSourceReply(payload: ReplyPayload | undefined): boolean {
+  if (!payload) {
+    return false;
+  }
   return getReplyPayloadMetadata(payload)?.sourceReplyTranscriptMirror?.transcriptOwner === true;
 }
 
@@ -370,7 +373,6 @@ async function finalizeChatSendAgentReplyPayloads(
               // The delivery tool persisted and published this row itself. Retain its
               // prepared content for media rewrite, but never re-broadcast it as a
               // second terminal for the run.
-              state.broadcastContent = [];
               continue;
             }
             broadcastContent.push(...state.broadcastContent);
@@ -456,7 +458,13 @@ async function finalizeChatSendAgentReplyPayloads(
         });
       }
     }
-    const sourceReplyContent = sourceReplyContentStates.flatMap((state) => {
+    const sourceReplyContent = sourceReplyContentStates.flatMap((state, replyIndex) => {
+      // A transcript-owned row is already published by its delivery tool. Contributing
+      // anything here - including the media-failure placeholder for unbacked managed
+      // media - would add a second terminal for the same run.
+      if (isTranscriptOwnedSourceReply(agentRunReplyPayloads[replyIndex])) {
+        return [];
+      }
       if (state.hasManagedOutgoingContent && !state.backedManagedOutgoingContent) {
         return (
           stripManagedOutgoingAssistantContentBlocks(state.broadcastContent) ?? [
