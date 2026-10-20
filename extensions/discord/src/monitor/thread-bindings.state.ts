@@ -75,7 +75,8 @@ type AdoptedThreadBindingsGlobalState = Omit<
   Partial<Pick<ThreadBindingsGlobalState, "accountOperationTails" | "runtimeByManager">>;
 
 function ensureAdoptedThreadBindingsState(state: ThreadBindingsGlobalState): void {
-  const adopted = state as AdoptedThreadBindingsGlobalState;
+  // A predecessor's object carries this registry's fields without the maps added later.
+  const adopted: AdoptedThreadBindingsGlobalState = state;
   adopted.accountOperationTails ??= new WeakMap();
   adopted.runtimeByManager ??= new WeakMap();
 }
