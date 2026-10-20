@@ -74,14 +74,12 @@ import { buildTestCtx } from "./test-ctx.js";
 const dirs = createSuiteTempRootTracker({ prefix: "openclaw-stop-owner-" });
 const sessionKey = "agent:main:slack:group:g12345678";
 
-const cancelSkillExperienceReviewForSessionMock = vi.hoisted(() => vi.fn());
-const suppressSkillExperienceReviewRunsMock = vi.hoisted(() => vi.fn());
+const stopSkillExperienceReviewMock = vi.hoisted(() => vi.fn());
 
 // mock-isolation: Observe the shared Stop kernel's review bridge without starting review work.
 vi.mock("../../skills/workshop/experience-review-default.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../skills/workshop/experience-review-default.js")>()),
-  cancelSkillExperienceReviewForSession: cancelSkillExperienceReviewForSessionMock,
-  suppressSkillExperienceReviewRuns: suppressSkillExperienceReviewRunsMock,
+  stopSkillExperienceReview: stopSkillExperienceReviewMock,
 }));
 
 beforeAll(() => dirs.setup());

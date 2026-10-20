@@ -202,13 +202,13 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
           }
         }
       })().catch((error: unknown) => {
-        if (
-          // A production review settles as a plain Error after its model run is
-          // aborted, so inspect the owned signal rather than only the error name.
-          reviewSignal?.aborted ||
+        const expectedCancellation =
           isExpectedRunCancellation(error) ||
-          (error instanceof Error && error.name === "AbortError")
-        ) {
+          (error instanceof Error && error.name === "AbortError");
+        // An aborted review can still fail its independent cleanup. Keep the existing
+        // classifier protection: that aggregate is a real failure, never a cancellation.
+        const cleanupFailure = error instanceof AggregateError && !expectedCancellation;
+        if (!cleanupFailure && (reviewSignal?.aborted || expectedCancellation)) {
           log.debug(`skill experience review cancelled: ${formatErrorMessage(error)}`);
         } else {
           log.warn(`skill experience review failed: ${formatErrorMessage(error)}`);

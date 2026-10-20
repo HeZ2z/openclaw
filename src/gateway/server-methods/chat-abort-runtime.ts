@@ -18,7 +18,6 @@ import {
   getLatestLiveSubagentRunByChildSessionKey,
   isSubagentRunQueued,
 } from "../../agents/subagents/registry/subagent-registry-read.js";
-import { logVerbose } from "../../globals.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import {
   getRpcSourceForGateway,
@@ -27,10 +26,6 @@ import {
   getRpcSourceProjectSessionActive,
   isRpcSourceRegistered,
 } from "../../sessions/session-controller.rpc-sources.js";
-import {
-  cancelSkillExperienceReviewForSession,
-  suppressSkillExperienceReviewRuns,
-} from "../../skills/workshop/experience-review-default.js";
 import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { errorShapeFromError } from "../error-shape.js";
@@ -57,35 +52,6 @@ function getQueuedCollectorCancellationRunId(result: SubagentAdminKillResult): s
     result.targetState.task.error === SUBAGENT_KILL_TASK_ERROR
     ? result.runId
     : undefined;
-}
-
-/**
- * Explicit user Stop cancels queued/in-flight Workshop Experience Review for the stopped
- * session and suppresses the stopped runs' own aborted agent_end completions, which would
- * otherwise re-arm a review. Best-effort: review bookkeeping never fails Stop.
- */
-function applyExplicitStopExperienceReview(
-  params: Pick<ChatSessionAbortParams, "cancelExperienceReview" | "agentId" | "sessionKey">,
-  plan: ReturnType<typeof prepareChatSessionAbort>,
-): void {
-  if (params.cancelExperienceReview !== true) {
-    return;
-  }
-  if (params.agentId && params.sessionKey) {
-    try {
-      cancelSkillExperienceReviewForSession({
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-      });
-    } catch (error) {
-      logVerbose(`skill experience review cancellation failed: ${String(error)}`);
-    }
-  }
-  try {
-    suppressSkillExperienceReviewRuns(plan.selectedRunIds);
-  } catch (error) {
-    logVerbose(`skill experience review suppression failed: ${String(error)}`);
-  }
 }
 
 /** Stops registry-owned work that has no active executor to reach through ordinary abort. */
@@ -293,7 +259,6 @@ export function abortDormantSubagentSession(
               );
               return false;
             }
-            applyExplicitStopExperienceReview(params, plan);
             plan.abort();
             return plan.canCascade;
           },
@@ -371,7 +336,6 @@ export async function abortChatRunsForSessionKeyWithPartials(
         assertCurrent: params.assertCurrent,
         beforeKill: async () => {
           await params.beforeAbort?.();
-          applyExplicitStopExperienceReview(params, plan);
           plan.abort();
           // Parent cancellation observers can replace the conversation before child effects.
           await params.beforeAbort?.();
@@ -383,7 +347,6 @@ export async function abortChatRunsForSessionKeyWithPartials(
         await prepare();
       }
       await params.beforeAbort?.();
-      applyExplicitStopExperienceReview(params, plan);
       plan.abort();
     }
     if (!result.unauthorized && !result.error) {

@@ -24,6 +24,7 @@ import {
   type SessionStopRequest,
   type SessionStopExecution,
 } from "../../sessions/session-controller.stop.js";
+import { stopSkillExperienceReview } from "../../skills/workshop/experience-review-default.js";
 import {
   waitForChatAbortAcknowledgment,
   waitForChatAbortTerminalPersistence,
@@ -380,6 +381,14 @@ export function prepareChatSessionAbort(
     );
     if (!params.hookContext && isCommandStop) {
       throw new Error(`Stop source ${params.stopSource} requires command hook context`);
+    }
+    // Accepted Stop with confirmed authority. Review cancellation never precedes this gate, so
+    // a rejected Stop leaves the session's queued and in-flight review untouched.
+    if (params.cancelExperienceReview === true) {
+      stopSkillExperienceReview({
+        sessions: [{ agentId: params.agentId, sessionKey: params.sessionKey }],
+        runIds: selectedRunIds,
+      });
     }
     const stopRequest = {
       capture: stopCapture,

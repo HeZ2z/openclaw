@@ -45,10 +45,7 @@ import {
   type SessionStopRequest,
 } from "../../sessions/session-controller.stop.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  cancelSkillExperienceReviewForSession,
-  suppressSkillExperienceReviewRuns,
-} from "../../skills/workshop/experience-review-default.js";
+import { stopSkillExperienceReview } from "../../skills/workshop/experience-review-default.js";
 import { resolveCommandAuthorizationAsync } from "../command-auth.js";
 import { resolveAbortCutoffFromContext, shouldPersistAbortCutoff } from "./abort-cutoff.js";
 import { setAbortMemory } from "./abort-primitives.js";
@@ -58,17 +55,45 @@ import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
 import { resolveSessionConversationBindingContext } from "./session-conversation-binding.js";
 
 type ChannelStopTarget = SessionControllerInput | ReplyOperation;
+/** Selected agent/session pair whose Workshop review this Stop cancels. */
+export type ChannelStopReviewTarget = { agentId: string; sessionKey: string };
 export type ChannelStopCapture = {
   controller: SessionControllerStopCapture;
   sessionId?: string;
-  /** Selected command target identity; cancellation keys the scheduler by these exact fields. */
-  agentId?: string;
-  sessionKey?: string;
+  /** One entry per combined capture: every selected conversation keeps its review identity. */
+  reviewTargets: readonly ChannelStopReviewTarget[];
   mcpSessionIds: ReadonlyMap<ChannelStopTarget, readonly string[]>;
   idleMcpRetirements: readonly NonNullable<ReturnType<typeof captureSessionMcpRuntimeRetirement>>[];
   commands: readonly ReturnType<typeof captureExecRequestCancellation>[];
   requestRunIds: ReadonlySet<string>;
 };
+
+function mergeStopReviewTargets(
+  targets: Iterable<{ agentId?: string; sessionKey?: string }>,
+): ChannelStopReviewTarget[] {
+  const merged = new Map<string, ChannelStopReviewTarget>();
+  for (const target of targets) {
+    if (!target.agentId || !target.sessionKey) {
+      continue;
+    }
+    merged.set(`${target.agentId}\u0000${target.sessionKey}`, {
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+    });
+  }
+  return [...merged.values()];
+}
+
+/** Attach one selected conversation's review identity without re-capturing its resources. */
+function withChannelStopReviewTarget(
+  capture: ChannelStopCapture,
+  target: { agentId?: string; sessionKey?: string },
+): ChannelStopCapture {
+  return {
+    ...capture,
+    reviewTargets: mergeStopReviewTargets([...capture.reviewTargets, target]),
+  };
+}
 
 function matchesStopCandidate(
   candidate: Pick<
@@ -140,6 +165,7 @@ function captureChannelStopResources(
   controller: SessionControllerStopCapture,
   capturedSessionId?: string,
   commandTarget?: ExecRequestIdentity,
+  reviewTarget?: { agentId?: string; sessionKey?: string },
 ): ChannelStopCapture {
   const selectedSessionId =
     controller.activeInputs[0]?.claim?.operation?.sessionId ??
@@ -191,8 +217,13 @@ function captureChannelStopResources(
   return {
     controller,
     sessionId: selectedSessionId,
-    agentId: commandTarget?.agentId,
-    sessionKey: commandTarget?.sessionKey,
+    reviewTargets: mergeStopReviewTargets(
+      reviewTarget
+        ? [reviewTarget]
+        : commandTarget
+          ? [{ agentId: commandTarget.agentId, sessionKey: commandTarget.sessionKey }]
+          : [],
+    ),
     mcpSessionIds,
     idleMcpRetirements: idleMcpRetirement ? [idleMcpRetirement] : [],
     commands,
@@ -205,7 +236,6 @@ function captureChannelStopResources(
 }
 
 function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): ChannelStopCapture {
-  const primary = captures[0];
   return {
     controller: captureSessionControllerStop({
       inputs: captures.flatMap((capture) => [...capture.controller.inputs]),
@@ -213,8 +243,7 @@ function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): Ch
       effects: captures.flatMap((capture) => [...capture.controller.effects]),
       pendingCaptures: captures.map((capture) => capture.controller),
     }),
-    agentId: primary?.agentId,
-    sessionKey: primary?.sessionKey,
+    reviewTargets: mergeStopReviewTargets(captures.flatMap((capture) => capture.reviewTargets)),
     mcpSessionIds: new Map(captures.flatMap((capture) => [...capture.mcpSessionIds])),
     idleMcpRetirements: captures.flatMap((capture) =>
       capture.idleMcpRetirements.filter((retirement) => retirement.sessionId === capture.sessionId),
@@ -225,26 +254,14 @@ function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): Ch
 }
 
 /**
- * Explicit Stop cancels background learning for the stopped session and suppresses the
- * stopped run ids until their own aborted completions arrive. Both are best-effort: a
- * review failure must never fail `/stop`.
+ * Explicit Stop cancels background learning for every stopped conversation and suppresses the
+ * stopped run ids until their own aborted completions arrive.
  */
 function cancelSkillExperienceReviewForStoppedCapture(capture: ChannelStopCapture): void {
-  if (capture.agentId && capture.sessionKey) {
-    try {
-      cancelSkillExperienceReviewForSession({
-        agentId: capture.agentId,
-        sessionKey: capture.sessionKey,
-      });
-    } catch (error) {
-      logVerbose(`skill experience review cancellation failed: ${formatErrorMessage(error)}`);
-    }
-  }
-  try {
-    suppressSkillExperienceReviewRuns(capture.requestRunIds);
-  } catch (error) {
-    logVerbose(`skill experience review suppression failed: ${formatErrorMessage(error)}`);
-  }
+  stopSkillExperienceReview({
+    sessions: capture.reviewTargets,
+    runIds: capture.requestRunIds,
+  });
 }
 
 /** Scope adapter only: cancellation and acceptance belong to the captured Stop kernel. */
@@ -261,17 +278,6 @@ export function abortSessionRunTargetWithOutcome(params: {
   let selectedCapture: ChannelStopCapture | undefined;
   const resolveCapture = () =>
     (selectedCapture ??= typeof params.capture === "function" ? params.capture() : params.capture);
-  // Own the capture before any cancellation effect, then bridge review cancellation once for
-  // every authorized Stop path (fast dispatch and command) before the captured runs abort.
-  let reviewStopApplied = false;
-  const ownCapture = () => {
-    const capture = resolveCapture();
-    if (!reviewStopApplied) {
-      reviewStopApplied = true;
-      cancelSkillExperienceReviewForStoppedCapture(capture);
-    }
-    return capture;
-  };
   const retiring = new Set<string>();
   const trackRetirement = (sessionId: string, start: () => Promise<void>) => {
     if (retiring.has(sessionId)) {
@@ -299,7 +305,7 @@ export function abortSessionRunTargetWithOutcome(params: {
   };
   return stopSession({
     source: "channel-user",
-    capture: () => ownCapture().controller,
+    capture: () => resolveCapture().controller,
     assertCurrent: params.assertCurrent,
     hookContext: params.hookContext,
     messageIdentity: params.messageIdentity,
@@ -308,7 +314,7 @@ export function abortSessionRunTargetWithOutcome(params: {
     externalParent: {
       stop: () => {
         let aborted = false;
-        for (const commands of ownCapture().commands) {
+        for (const commands of resolveCapture().commands) {
           params.assertCurrent?.();
           aborted = commands.cancel() || aborted;
         }
@@ -316,14 +322,17 @@ export function abortSessionRunTargetWithOutcome(params: {
       },
       get settled() {
         const settlement = Promise.all(
-          ownCapture().commands.map((commands) => commands.settle()),
+          resolveCapture().commands.map((commands) => commands.settle()),
         ).then(() => undefined);
         params.retirements.push(settlement);
         return settlement;
       },
     },
     afterQueued: () => {
-      const capture = ownCapture();
+      const capture = resolveCapture();
+      // The Stop kernel calls afterQueued only after revalidating the captured Stop's live
+      // target, so review cancellation cannot outrun a rejected foreground cancellation.
+      cancelSkillExperienceReviewForStoppedCapture(capture);
       params.afterQueued?.();
       for (const retirement of capture.idleMcpRetirements) {
         trackRetirement(retirement.sessionId, () =>
@@ -332,7 +341,7 @@ export function abortSessionRunTargetWithOutcome(params: {
       }
     },
     onCancelled: (target) => {
-      const capture = ownCapture();
+      const capture = resolveCapture();
       // Raw preparation and active producers retain custody after the Stop acknowledgment.
       if (!capture.mcpSessionIds.has(target) && "mailbox" in target) {
         params.retirements.push(captureSessionControllerSourceStopAcknowledgment(target));
@@ -583,7 +592,12 @@ export async function executeFastAbortRequest(
                       agentId: boundAgentId,
                     }),
                   )
-                  .map((candidate) => candidate.channel),
+                  .map((candidate) =>
+                    withChannelStopReviewTarget(candidate.channel, {
+                      agentId: candidate.agentId ?? boundAgentId,
+                      sessionKey: boundKey,
+                    }),
+                  ),
               );
             }
             if (

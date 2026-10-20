@@ -269,6 +269,37 @@ it("aborts the in-flight review for a session the user stopped", async () => {
   expect(runReview).toHaveBeenCalledOnce();
 });
 
+it("keeps an independent cleanup failure visible after cancellation", async () => {
+  runReview.mockImplementation(
+    (_candidate, signal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () =>
+            reject(
+              new AggregateError(
+                [
+                  new Error("Skill review model run aborted."),
+                  new Error("workshop change read failed"),
+                ],
+                "Skill experience review and its cleanup failed",
+              ),
+            ),
+          { once: true },
+        );
+      }),
+  );
+  turn(10);
+  await fireTimers();
+  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
+  await setImmediate();
+
+  expect(log.debug).not.toHaveBeenCalled();
+  expect(log.warn).toHaveBeenCalledWith(
+    expect.stringContaining("Skill experience review and its cleanup failed"),
+  );
+});
+
 it("cancels only the stopped session's queued review", async () => {
   turn(10);
   turn(10, {

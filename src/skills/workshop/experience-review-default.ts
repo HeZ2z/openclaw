@@ -53,7 +53,7 @@ export function scheduleSkillExperienceReview(
 }
 
 /** Drops queued and in-flight Experience Review work for one explicitly stopped session. */
-export function cancelSkillExperienceReviewForSession(params: {
+function cancelSkillExperienceReviewForSession(params: {
   agentId: string;
   sessionKey: string;
 }): void {
@@ -61,8 +61,38 @@ export function cancelSkillExperienceReviewForSession(params: {
 }
 
 /** Ignores the stopped runs' own aborted completions; later turns still schedule. */
-export function suppressSkillExperienceReviewRuns(runIds: Iterable<string>): void {
+function suppressSkillExperienceReviewRuns(runIds: Iterable<string>): void {
   defaultScheduler.suppressRuns(runIds);
+}
+
+/**
+ * Explicit Stop bridge: drops every stopped session's queued review, aborts its in-flight
+ * review, and suppresses the stopped runs until their own aborted completions arrive.
+ * Best-effort so review bookkeeping never fails Stop; callers apply it only after the Stop's
+ * live authority is confirmed, so a rejected Stop leaves review state untouched.
+ */
+export function stopSkillExperienceReview(params: {
+  sessions: readonly { agentId?: string; sessionKey?: string }[];
+  runIds: Iterable<string>;
+}): void {
+  for (const session of params.sessions) {
+    if (!session.agentId || !session.sessionKey) {
+      continue;
+    }
+    try {
+      cancelSkillExperienceReviewForSession({
+        agentId: session.agentId,
+        sessionKey: session.sessionKey,
+      });
+    } catch (error) {
+      log.warn(`skill experience review cancellation failed: ${formatErrorMessage(error)}`);
+    }
+  }
+  try {
+    suppressSkillExperienceReviewRuns(params.runIds);
+  } catch (error) {
+    log.warn(`skill experience review suppression failed: ${formatErrorMessage(error)}`);
+  }
 }
 
 /**

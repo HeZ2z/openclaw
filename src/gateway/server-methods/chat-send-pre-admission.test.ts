@@ -44,14 +44,12 @@ import {
 } from "./chat-send-pre-admission.js";
 
 const reviewMocks = vi.hoisted(() => ({
-  cancelSession: vi.fn(),
-  suppressRuns: vi.fn(),
+  stopReview: vi.fn(),
 }));
 
 vi.mock("../../skills/workshop/experience-review-default.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../skills/workshop/experience-review-default.js")>()),
-  cancelSkillExperienceReviewForSession: reviewMocks.cancelSession,
-  suppressSkillExperienceReviewRuns: reviewMocks.suppressRuns,
+  stopSkillExperienceReview: reviewMocks.stopReview,
 }));
 
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
@@ -165,8 +163,7 @@ let params: ReturnType<typeof createFixture>;
 beforeEach(() => {
   vi.mocked(readSessionSubmittedInput).mockReset().mockResolvedValue(undefined);
   vi.mocked(resolveDurableChatClaim).mockReset();
-  reviewMocks.cancelSession.mockReset();
-  reviewMocks.suppressRuns.mockReset();
+  reviewMocks.stopReview.mockReset();
   params = createFixture();
 });
 
@@ -221,12 +218,13 @@ it("stops admitted session work while preserving a detached producer", async () 
       expect(loadSessionEntry({ agentId: "main", storePath, sessionKey })).toEqual(before);
       // Gateway chat.send "/stop" is an explicit Stop: cover the Workshop review bridge
       // exactly like the fast channel "/stop" path.
-      expect(reviewMocks.cancelSession).toHaveBeenCalledWith({
-        agentId: "main",
-        sessionKey,
-      });
-      expect(reviewMocks.suppressRuns).toHaveBeenCalledOnce();
-      expect(Array.from(reviewMocks.suppressRuns.mock.calls[0]![0])).toContain("admitted-producer");
+      expect(reviewMocks.stopReview).toHaveBeenCalledOnce();
+      const reviewCall = reviewMocks.stopReview.mock.calls[0]![0] as {
+        sessions: { agentId?: string; sessionKey?: string }[];
+        runIds: Iterable<string>;
+      };
+      expect(reviewCall.sessions).toEqual([{ agentId: "main", sessionKey }]);
+      expect([...reviewCall.runIds]).toContain("admitted-producer");
     } finally {
       admission.release();
       detachActiveEmbeddedRun(entry!.sessionId, handle);

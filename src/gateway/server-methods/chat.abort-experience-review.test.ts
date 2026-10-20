@@ -11,14 +11,12 @@ import {
 import type { GatewayRequestContext } from "./types.js";
 
 const reviewMocks = vi.hoisted(() => ({
-  cancelSession: vi.fn(),
-  suppressRuns: vi.fn(),
+  stopReview: vi.fn(),
 }));
 
 vi.mock("../../skills/workshop/experience-review-default.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../skills/workshop/experience-review-default.js")>()),
-  cancelSkillExperienceReviewForSession: reviewMocks.cancelSession,
-  suppressSkillExperienceReviewRuns: reviewMocks.suppressRuns,
+  stopSkillExperienceReview: reviewMocks.stopReview,
 }));
 
 vi.mock("../session-utils.js", async (importOriginal) => ({
@@ -31,6 +29,7 @@ vi.mock("../session-utils.js", async (importOriginal) => ({
 
 const sessionKey = "agent:main:main";
 const storeScope = "/synthetic/experience-review/sessions.json";
+const owner = { connId: "conn-owner", deviceId: "dev-owner" };
 
 function createRun(runId: string, queued = false) {
   return createActiveRun(sessionKey, {
@@ -42,13 +41,20 @@ function createRun(runId: string, queued = false) {
   });
 }
 
+function reviewCall() {
+  expect(reviewMocks.stopReview).toHaveBeenCalledOnce();
+  return reviewMocks.stopReview.mock.calls[0]![0] as {
+    sessions: { agentId?: string; sessionKey?: string }[];
+    runIds: Iterable<string>;
+  };
+}
+
 beforeEach(() => {
-  reviewMocks.cancelSession.mockReset();
-  reviewMocks.suppressRuns.mockReset();
+  reviewMocks.stopReview.mockReset();
 });
 
 describe("explicit chat Stop covers Workshop Experience Review", () => {
-  it("cancels the review and suppresses the exact selected run for a plain chat.abort", async () => {
+  it("cancels the review and suppresses the selected run for a plain chat.abort", async () => {
     const runId = "review-stop-run";
     const run = createRun(runId);
     const context = createChatAbortContext({ sources: [[runId, run]] });
@@ -61,34 +67,69 @@ describe("explicit chat Stop covers Workshop Experience Review", () => {
     });
 
     expect(requireLastRespondCall(respond)[0]).toBe(true);
-    expect(reviewMocks.cancelSession).toHaveBeenCalledOnce();
-    expect(reviewMocks.cancelSession).toHaveBeenCalledWith({ agentId: "main", sessionKey });
-    expect(reviewMocks.suppressRuns).toHaveBeenCalledOnce();
-    expect(Array.from(reviewMocks.suppressRuns.mock.calls[0]![0])).toContain(runId);
+    const call = reviewCall();
+    expect(call.sessions).toEqual([{ agentId: "main", sessionKey }]);
+    expect([...call.runIds]).toContain(runId);
     expect(run.input.abortSignal.aborted).toBe(true);
   });
 
-  it("keeps a throwing review binding from changing the abort result", async () => {
-    const runId = "review-stop-throws";
-    const run = createRun(runId);
+  it("leaves the review untouched when a rejected caller's Stop is unauthorized", async () => {
+    const runId = "review-foreign-run";
+    const run = createActiveRun(sessionKey, {
+      sessionId: "main-session",
+      agentId: "main",
+      storeScope,
+      runId,
+      owner,
+    });
     const context = createChatAbortContext({ sources: [[runId, run]] });
-    reviewMocks.cancelSession.mockImplementation(() => {
-      throw new Error("review cancellation failed");
-    });
-    reviewMocks.suppressRuns.mockImplementation(() => {
-      throw new Error("review suppression failed");
-    });
 
     const respond = await invokeChatAbortHandler({
       handler: handleChatAbortRequestWithLifecycle,
       context,
       request: { sessionKey },
-      client: { connect: { scopes: ["operator.admin"] } },
+      client: {
+        connId: "conn-other",
+        connect: { device: { id: "dev-other" }, scopes: ["operator.write"] },
+      },
     });
 
-    const [ok, payload] = requireLastRespondCall(respond);
-    expect(ok).toBe(true);
-    expect(payload).toMatchObject({ ok: true, aborted: true, runIds: [runId] });
+    const [ok, , error] = requireLastRespondCall(respond);
+    expect(ok).toBe(false);
+    expect(error?.message).toBe("unauthorized");
+    expect(reviewMocks.stopReview).not.toHaveBeenCalled();
+    expect(run.input.abortSignal.aborted).toBe(false);
+  });
+
+  it("covers an exact-run Stop from a shipped chat client", async () => {
+    const runId = "review-exact-run";
+    const run = createActiveRun(sessionKey, {
+      sessionId: "main-session",
+      agentId: "main",
+      storeScope,
+      runId,
+      owner,
+    });
+    const context = createChatAbortContext({ sources: [[runId, run]] });
+
+    const respond = await invokeChatAbortHandler({
+      handler: handleChatAbortRequestWithLifecycle,
+      context,
+      request: { sessionKey, runId },
+      client: {
+        connId: "conn-owner",
+        connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+      },
+    });
+
+    expect(requireLastRespondCall(respond)[1]).toMatchObject({
+      ok: true,
+      aborted: true,
+      runIds: [runId],
+    });
+    const call = reviewCall();
+    expect(call.sessions).toEqual([{ agentId: "main", sessionKey }]);
+    expect([...call.runIds]).toEqual([runId]);
     expect(run.input.abortSignal.aborted).toBe(true);
   });
 
@@ -105,8 +146,7 @@ describe("explicit chat Stop covers Workshop Experience Review", () => {
     });
 
     expect(requireLastRespondCall(respond)[0]).toBe(true);
-    expect(reviewMocks.cancelSession).not.toHaveBeenCalled();
-    expect(reviewMocks.suppressRuns).not.toHaveBeenCalled();
+    expect(reviewMocks.stopReview).not.toHaveBeenCalled();
   });
 
   it("does not touch reviews for a maintenance abort without the explicit-stop flag", async () => {
@@ -127,7 +167,6 @@ describe("explicit chat Stop covers Workshop Experience Review", () => {
     });
 
     expect(result.aborted).toBe(true);
-    expect(reviewMocks.cancelSession).not.toHaveBeenCalled();
-    expect(reviewMocks.suppressRuns).not.toHaveBeenCalled();
+    expect(reviewMocks.stopReview).not.toHaveBeenCalled();
   });
 });
