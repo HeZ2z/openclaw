@@ -6,6 +6,7 @@ import {
   createLifecycleMonitorSetup,
   createTextUpdate,
   postWebhookReplay,
+  postWebhookUpdate,
 } from "./test-support/lifecycle-test-support.js";
 import {
   getZaloRuntimeMock,
@@ -64,13 +65,11 @@ async function postUpdate(
         });
         expect([first.status, duplicate.status]).toEqual([200, 200]);
       } else {
-        const response = await fetch(`${baseUrl}/hooks/zalo`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-bot-api-secret-token": "supersecret",
-          },
-          body: JSON.stringify(payload),
+        const response = await postWebhookUpdate({
+          baseUrl,
+          path: "/hooks/zalo",
+          secret: "supersecret",
+          payload,
         });
         expect(response.status).toBe(200);
       }

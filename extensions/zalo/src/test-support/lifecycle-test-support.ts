@@ -218,7 +218,7 @@ export async function settleAsyncWork(): Promise<void> {
   }
 }
 
-async function postWebhookUpdate(params: {
+export async function postWebhookUpdate(params: {
   baseUrl: string;
   path: string;
   secret: string;
