@@ -412,14 +412,18 @@ async function authorizeSlashInvocation(params: {
         id: senderId,
         meta: { name: senderName },
       });
-      return {
-        ok: false,
-        denyText: core.channel.pairing.buildPairingReply({
-          channel: "mattermost",
-          idLine: `Your Mattermost user id: ${senderId}`,
-          code,
-        }),
-      };
+      // A full pending queue returns an empty code and stores no request; fall
+      // through to the generic denial instead of an approve command with no code.
+      if (code) {
+        return {
+          ok: false,
+          denyText: core.channel.pairing.buildPairingReply({
+            channel: "mattermost",
+            idLine: `Your Mattermost user id: ${senderId}`,
+            code,
+          }),
+        };
+      }
     }
 
     const denyText =

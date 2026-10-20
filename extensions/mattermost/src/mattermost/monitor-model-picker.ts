@@ -77,13 +77,17 @@ export function createMattermostModelPickerInteractionHandler(
           id: params.payload.user_id,
           meta: { name: params.userName },
         });
-        return {
-          ephemeral_text: core.channel.pairing.buildPairingReply({
-            channel: "mattermost",
-            idLine: `Your Mattermost user id: ${params.payload.user_id}`,
-            code,
-          }),
-        };
+        // A full pending queue returns an empty code and stores no request; fall
+        // through to the generic denial instead of an approve command with no code.
+        if (code) {
+          return {
+            ephemeral_text: core.channel.pairing.buildPairingReply({
+              channel: "mattermost",
+              idLine: `Your Mattermost user id: ${params.payload.user_id}`,
+              code,
+            }),
+          };
+        }
       }
       const denyText =
         auth.denyReason === "unknown-channel"
