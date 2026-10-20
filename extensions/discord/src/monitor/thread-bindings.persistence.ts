@@ -1,6 +1,7 @@
 import { enqueueKeyedTask } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createPluginStateErrorReporter } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { asOptionalObjectRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { stripUndefinedFields } from "../internal/undefined-fields.js";
 import { getDiscordRuntime } from "../runtime.js";
@@ -64,6 +65,7 @@ export function drainThreadBindingMutations(): Promise<void> {
 }
 
 export async function commitBindingRecord(params: {
+  runtime?: PluginRuntime | null;
   bindingKey: string;
   previous: ThreadBindingRecord | undefined;
   next: ThreadBindingRecord | null;
@@ -100,7 +102,7 @@ export async function commitBindingRecord(params: {
       records.delete(params.bindingKey);
     }
     try {
-      const store = openThreadBindingsStoreAsync();
+      const store = openThreadBindingsStoreAsync(params.runtime);
       // Preserve the namespace's registration order and bounded eviction recency.
       for (const [key, record] of records) {
         assertCurrent();
@@ -170,11 +172,14 @@ export async function commitBindingRecord(params: {
   }
 }
 
-function persistBindingsSync(update?: {
-  bindingKey: string;
-  transform: (record: ThreadBindingRecord) => ThreadBindingRecord;
-}): ThreadBindingRecord | undefined {
-  const store = openThreadBindingsStore();
+function persistBindingsSync(
+  runtime: PluginRuntime | null | undefined,
+  update?: {
+    bindingKey: string;
+    transform: (record: ThreadBindingRecord) => ThreadBindingRecord;
+  },
+): ThreadBindingRecord | undefined {
+  const store = openThreadBindingsStore(runtime);
   let updatedRecord: ThreadBindingRecord | undefined;
   for (const [key, record] of BINDINGS_BY_THREAD_ID) {
     if (key === update?.bindingKey) {
@@ -203,6 +208,7 @@ function persistBindingsSync(update?: {
 
 /** Public SDK compatibility only; bundled callers await worker mutations. */
 export function updateBindingRecordSync(params: {
+  runtime?: PluginRuntime | null;
   bindingKey: string;
   transform: (record: ThreadBindingRecord) => ThreadBindingRecord;
   persist: boolean;
@@ -220,7 +226,7 @@ export function updateBindingRecordSync(params: {
       now - THREAD_BINDINGS_STATE.lastPersistedAtMs >= params.minIntervalMs);
   if (persist) {
     try {
-      const updated = persistBindingsSync(params);
+      const updated = persistBindingsSync(params.runtime, params);
       return updated ?? null;
     } catch {
       THREAD_BINDINGS_STATE.persistenceAvailable = false;
@@ -237,7 +243,10 @@ export function updateBindingRecordSync(params: {
 }
 
 /** Public SDK compatibility only; bundled callers await worker mutations. */
-export function removeBindingRecordSync(bindingKey: string): ThreadBindingRecord | null {
+export function removeBindingRecordSync(
+  bindingKey: string,
+  runtime?: PluginRuntime | null,
+): ThreadBindingRecord | null {
   const record = BINDINGS_BY_THREAD_ID.get(bindingKey);
   if (!record) {
     return null;
@@ -247,10 +256,10 @@ export function removeBindingRecordSync(bindingKey: string): ThreadBindingRecord
   }
   let removed: ThreadBindingRecord | null = null;
   try {
-    const store = openThreadBindingsStore();
+    const store = openThreadBindingsStore(runtime);
     store.delete(bindingKey);
     removed = removeBindingRecord(bindingKey);
-    persistBindingsSync();
+    persistBindingsSync(runtime);
     return removed;
   } catch {
     THREAD_BINDINGS_STATE.persistenceAvailable = false;

@@ -14,3 +14,7 @@ export const loadDiscordVoiceTestHarness = () =>
 // Gateway capture proof keeps routing/admission real; only transport edges are substituted.
 export const loadDiscordGatewayCaptureFixture = () =>
   import("./src/voice/voice-gateway-capture.test-support.js");
+
+export const loadDiscordThreadBindingTestHarness = () =>
+  import("./src/monitor/thread-bindings.lifecycle.test-support.js");
+export { resetThreadBindingsForTests } from "./src/monitor/thread-bindings.test-support.js";
