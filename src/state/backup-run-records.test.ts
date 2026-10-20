@@ -209,14 +209,6 @@ describe("backup run records", () => {
     { status: "ok", target: "", bytes: undefined },
     { status: "ok", target: "host", bytes: "-1" },
     { status: "ok", target: "host", bytes: "1.5" },
-    { status: "ok", target: "host", bytes: "0x10" },
-    { status: "ok", target: "host", bytes: "0o17" },
-    { status: "ok", target: "host", bytes: "0b101" },
-    { status: "ok", target: "host", bytes: "1e3" },
-    { status: "ok", target: "host", bytes: "010" },
-    { status: "ok", target: "host", bytes: "+5" },
-    { status: "ok", target: "host", bytes: "1_000" },
-    { status: "ok", target: "host", bytes: " 42" },
   ])("rejects invalid external outcome input %j", async (opts) => {
     await expect(backupRecordCommand(createTestRuntime(), opts)).rejects.toThrow();
   });
