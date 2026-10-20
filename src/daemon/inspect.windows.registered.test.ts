@@ -101,6 +101,38 @@ it.each(["foreign launcher", "wrapped gateway", "runtime version"])(
   },
 );
 
+it.each([
+  ["ambiguous command", "node gateway.js & node another.js", "ambiguous command at line 2"],
+  ["dynamic environment value", '"%NODE_EXE%" gateway.js', "dynamic environment value at line 2"],
+  [
+    "invalid environment assignment",
+    'set "GATEWAY_LOG=%USERPROFILE%\\gateway.log"',
+    "invalid environment assignment at line 2",
+  ],
+] as const)(
+  "retains the %s launcher rejection in the registered inspection detail",
+  async (_kind, launcherLine, detail) => {
+    const taskName = "\\OpenClaw Gateway";
+    const scriptPath = "C:\\Services\\OpenClaw\\gateway.cmd";
+    mockTask(taskSnapshot(taskName, scriptPath), false);
+    vi.spyOn(fs, "readFile").mockImplementation(async (pathname) => {
+      if (pathname !== scriptPath) {
+        throw new Error("Unexpected launcher read");
+      }
+      return Buffer.from(
+        [
+          "@echo off",
+          launcherLine,
+          '"C:\\Node\\node.exe" "C:\\OpenClaw\\openclaw.mjs" gateway run',
+        ].join("\r\n"),
+      );
+    });
+    await expect(
+      readTaskCommand({ ...account, OPENCLAW_WINDOWS_TASK_NAME: taskName }, effective),
+    ).rejects.toThrow(`${inspectionError} (${detail})`);
+  },
+);
+
 it.each(["runtime argv", "launcher metadata"])(
   "binds profiles from %s without admitting another profile",
   async (source) => {

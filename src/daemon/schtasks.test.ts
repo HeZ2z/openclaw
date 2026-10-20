@@ -282,17 +282,22 @@ describe("readScheduledTaskCommand", () => {
   });
 
   it.each([
-    "node gateway.js & node another.js",
-    'node gateway.js >> "C:\\Logs\\gateway.log"2>&1',
-    '"%NODE_EXE%" gateway.js < NUL',
-    "node gateway.js !WORKSPACE! < NUL",
-    'cd /d "%WORKSPACE%"\r\nnode gateway.js < NUL',
-  ])("rejects an ambiguous effective launcher body: %s", async (body) => {
-    const env = await writeScheduledTaskScript([body]);
-    await expect(readScheduledTaskCommand(env, { requireEffective: true })).rejects.toThrow(
-      inspectionError,
-    );
-  });
+    ["node gateway.js & node another.js", "ambiguous command at line 2"],
+    ['node gateway.js >> "C:\\Logs\\gateway.log"2>&1', "ambiguous command at line 2"],
+    ['"%NODE_EXE%" gateway.js < NUL', "dynamic environment value at line 2"],
+    ["node gateway.js !WORKSPACE! < NUL", "dynamic environment value at line 2"],
+    ['cd /d "%WORKSPACE%"\r\nnode gateway.js < NUL', "dynamic environment value at line 2"],
+    ['set "GATEWAY_LOG=%USERPROFILE%\\gateway.log"', "invalid environment assignment at line 2"],
+    ["node gateway.js\r\nnode second.js", "multiple commands at line 3"],
+  ] as const)(
+    "rejects an unsafe effective launcher body with its reason: %s",
+    async (body, detail) => {
+      const env = await writeScheduledTaskScript([body]);
+      await expect(readScheduledTaskCommand(env, { requireEffective: true })).rejects.toThrow(
+        `${inspectionError} (${detail})`,
+      );
+    },
+  );
 
   function mockWindowsLauncherFiles() {
     const env = { USERPROFILE: "C:\\Users\\test", OPENCLAW_PROFILE: "default" };
@@ -438,7 +443,7 @@ describe("readScheduledTaskCommand", () => {
       "2>&1",
     ]);
     await expect(readScheduledTaskCommand(env, { requireEffective: true })).rejects.toThrow(
-      inspectionError,
+      `${inspectionError} (ambiguous command at line 3)`,
     );
   });
 
