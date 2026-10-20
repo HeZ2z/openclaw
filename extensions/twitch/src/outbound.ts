@@ -5,6 +5,7 @@ import { getClientManager } from "./client-manager-registry.js";
 import { resolveTwitchAccountContext } from "./config.js";
 import { TWITCH_CHAT_MESSAGE_LIMIT } from "./constants.js";
 import { sendMessageTwitchInternal } from "./send.js";
+import { normalizeTwitchMessagingTarget } from "./target.js";
 import type {
   ChannelOutboundAdapter,
   ChannelOutboundContext,
@@ -35,10 +36,10 @@ export const twitchOutbound = {
     const hasWildcard = allowListRaw.includes("*");
     const allowList = allowListRaw
       .filter((entry: string) => entry !== "*")
-      .map((entry: string) => normalizeTwitchChannel(entry))
+      .map((entry: string) => normalizeTwitchMessagingTarget(entry))
       .filter((entry): entry is string => entry.length > 0);
 
-    const normalizedTo = normalizeTwitchChannel(trimmed);
+    const normalizedTo = normalizeTwitchMessagingTarget(trimmed);
     const restricted = mode === "implicit" || mode === "heartbeat";
     if (
       normalizedTo &&
@@ -85,12 +86,13 @@ export const twitchOutbound = {
       );
     }
     // A target that normalizes to empty still uses the account's default channel.
-    const deliveryChannel = normalizeTwitchChannel(channel) || account.channel;
+    const deliveryChannel =
+      normalizeTwitchMessagingTarget(channel) || normalizeTwitchChannel(account.channel);
     if (!deliveryChannel) {
       throw new Error("No channel specified and no default channel in account config");
     }
     const result = await sendMessageTwitchInternal({
-      channel: normalizeTwitchChannel(deliveryChannel),
+      channel: deliveryChannel,
       text,
       cfg,
       account,

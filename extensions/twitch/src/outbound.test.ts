@@ -143,6 +143,56 @@ describe("outbound", () => {
     });
   });
 
+  describe("messaging target normalization", () => {
+    it.each([
+      ["bare channel", "TestChannel", "testchannel"],
+      ["hash-prefixed channel", "#TestChannel", "testchannel"],
+      ["provider-prefixed channel", "twitch:TestChannel", "testchannel"],
+      ["internal channel target", "twitch:channel:TestChannel", "testchannel"],
+      ["internal channel target alias", "twitch-chat:channel:TestChannel", "testchannel"],
+    ])("resolves %s to the bare channel", (_name, to, expected) => {
+      expectTarget({ to, allowFrom: [] }, expected);
+    });
+
+    it.each(["user:alice", "dm:alice", "twitch:user:alice", "twitch:dm:alice"])(
+      "rejects unsupported direct target %s",
+      (to) => {
+        expectTargetError({ to });
+      },
+    );
+  });
+
+  describe("sendText target normalization", () => {
+    it.each([
+      ["bare channel", "TestChannel"],
+      ["hash-prefixed channel", "#TestChannel"],
+      ["provider-prefixed channel", "twitch:TestChannel"],
+      ["internal channel target", "twitch:channel:TestChannel"],
+    ])("dispatches %s to the bare channel", async (_name, to) => {
+      setupAccountContext();
+      vi.mocked(sendMessageTwitchInternal).mockResolvedValue({
+        messageId: "normalized-target-msg",
+        receipt: createMessageReceiptFromOutboundResults({
+          results: [
+            {
+              channel: "twitch",
+              conversationId: "testchannel",
+              messageId: "normalized-target-msg",
+            },
+          ],
+          kind: "text",
+        }),
+      });
+
+      const result = await twitchOutbound.sendText!({ ...sendParams, to });
+
+      expect(sendMessageTwitchInternal).toHaveBeenCalledWith(
+        expect.objectContaining({ channel: "testchannel" }),
+      );
+      expect(result.messageId).toBe("normalized-target-msg");
+    });
+  });
+
   describe("sendText", () => {
     it("preserves intentional no-send through outbound", async () => {
       setupAccountContext();
