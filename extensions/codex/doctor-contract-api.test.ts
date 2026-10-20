@@ -70,6 +70,10 @@ async function expectArchived(sidecarPath: string) {
   await fs.access(`${sidecarPath}.migrated`);
 }
 
+async function snapshotStateTree(stateDir: string) {
+  return (await fs.readdir(stateDir, { recursive: true })).toSorted();
+}
+
 function codexConfig<T extends Record<string, unknown>>(
   config: T,
   siblings: Record<string, { enabled: boolean }> = {},
@@ -696,6 +700,53 @@ describe("codex doctor contract", () => {
     assert(migration, "missing Codex binding migration");
 
     await expect(migration.detectLegacyState(params)).resolves.toBeNull();
+  });
+
+  it("inventories legacy binding sidecars without mutating them", async () => {
+    const fixture = await bindingFixture("backup-inventory");
+    const collectBackupResources = fixture.migration.collectBackupResources;
+    assert(collectBackupResources, "missing Codex binding backup collector");
+    const sidecarPath = await fs.realpath(fixture.sidecarPath);
+    const beforeTree = await snapshotStateTree(fixture.stateDir);
+    const beforeSidecar = await fs.readFile(sidecarPath, "utf8");
+
+    await expect(collectBackupResources(fixture.params)).resolves.toEqual([
+      { path: sidecarPath, kind: "file" },
+    ]);
+
+    expect(await snapshotStateTree(fixture.stateDir)).toEqual(beforeTree);
+    expect(await fs.readFile(sidecarPath, "utf8")).toBe(beforeSidecar);
+  });
+
+  it("inventories sidecars from agent and shared session roots", async () => {
+    const fixture = await bindingFixture("backup-agent-root");
+    const sharedDir = path.join(fixture.stateDir, "sessions");
+    const sharedSidecar = path.join(sharedDir, "shared.jsonl.codex-app-server.json");
+    await fs.mkdir(sharedDir, { recursive: true });
+    await writeJson(sharedSidecar, { schemaVersion: 2, threadId: "thread-shared" });
+    const collectBackupResources = fixture.migration.collectBackupResources;
+    assert(collectBackupResources, "missing Codex binding backup collector");
+    const expectedPaths = (
+      await Promise.all([fs.realpath(fixture.sidecarPath), fs.realpath(sharedSidecar)])
+    ).toSorted();
+
+    await expect(collectBackupResources(fixture.params)).resolves.toEqual(
+      expectedPaths.map((sidecarPath) => ({ path: sidecarPath, kind: "file" })),
+    );
+    await fs.access(sharedSidecar);
+    await fs.access(fixture.sidecarPath);
+  });
+
+  it("reports no backup resources when legacy sidecars are gone", async () => {
+    const fixture = await bindingFixture("backup-absent");
+    await fs.rm(fixture.sidecarPath);
+    const collectBackupResources = fixture.migration.collectBackupResources;
+    assert(collectBackupResources, "missing Codex binding backup collector");
+    const beforeTree = await snapshotStateTree(fixture.stateDir);
+
+    await expect(collectBackupResources(fixture.params)).resolves.toEqual([]);
+
+    expect(await snapshotStateTree(fixture.stateDir)).toEqual(beforeTree);
   });
 
   it("renames old approval-routed destructive plugin policy values", () => {

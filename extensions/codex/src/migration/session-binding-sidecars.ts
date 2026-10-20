@@ -143,7 +143,7 @@ async function collectSessionSurfaces(params: MigrationEnvironment): Promise<Ses
   return [...surfaces.values()].toSorted((a, b) => a.root.localeCompare(b.root));
 }
 
-async function collectLegacyBindingSources(
+export async function collectLegacyBindingSources(
   params: MigrationEnvironment,
   options: { firstOnly?: boolean } = {},
 ): Promise<{ sources: LegacyBindingSource[]; surfaces: SessionSurface[] }> {

@@ -108,6 +108,30 @@ it("does not claim missing recovery coverage for bundled core-only and disposabl
   expect(input.warnings).toEqual([]);
 });
 
+it("declares Codex app-server sidecar recovery coverage without warnings", async () => {
+  const { stateMigrations } = await loadBundledPluginFacade<{
+    stateMigrations: PluginDoctorStateMigration[];
+  }>({ pluginId: "codex", artifactBasename: "doctor-contract-api.ts" });
+  const migration = stateMigrations.find(
+    ({ id }) => id === "codex-app-server-sidecars-to-plugin-state",
+  );
+  if (!migration) {
+    throw new Error("Missing Codex app-server sidecar state migration");
+  }
+  const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+  const sidecarPath = path.join(sessionsDir, "legacy.jsonl.codex-app-server.json");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(sidecarPath, JSON.stringify({ schemaVersion: 2, threadId: "thread-legacy" }));
+
+  const result = await preparePluginDoctorMigrationResources(
+    stateMigrations.map((entry) => ({ pluginId: "codex", migration: entry })),
+    input,
+  );
+
+  expect(result.resources).toContainEqual({ path: fs.realpathSync(sidecarPath), kind: "file" });
+  expect(input.warnings.filter(({ pluginId }) => pluginId === "codex")).toEqual([]);
+});
+
 it("warns once per undeclared owner without running its migration", async () => {
   const result = await preparePluginDoctorMigrationResources(
     [
