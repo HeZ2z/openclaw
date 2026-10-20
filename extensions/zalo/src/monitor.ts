@@ -43,7 +43,15 @@ import {
   type ZaloUpdate,
 } from "./api.js";
 import { normalizeZaloAllowEntry, resolveZaloRuntimeGroupPolicy } from "./group-access.js";
+import {
+  describeWebhookTarget,
+  formatZaloError,
+  logZaloVerbose as logVerbose,
+  resolveZaloTimestampMs,
+  type ZaloCoreRuntime,
+} from "./monitor.helpers.js";
 import type { ZaloRuntimeEnv, ZaloStatusSink } from "./monitor.types.js";
+import { sendUnsupportedMessageNotice } from "./monitor.unsupported.js";
 import {
   prepareHostedZaloMediaUrl,
   resolveHostedZaloMediaRoutePrefix,
@@ -74,9 +82,7 @@ const ZALO_TEXT_LIMIT = 2000;
 const DEFAULT_MEDIA_MAX_MB = 5;
 const WEBHOOK_CLEANUP_TIMEOUT_MS = 5_000;
 const ZALO_TYPING_TIMEOUT_MS = 5_000;
-const UNIX_MILLISECONDS_THRESHOLD = 1_000_000_000_000;
 
-type ZaloCoreRuntime = ReturnType<typeof getZaloRuntime>;
 type ZaloProcessingContext = {
   token: string;
   account: ResolvedZaloAccount;
@@ -95,12 +101,6 @@ type ZaloProcessingContext = {
 type ZaloUpdateProcessingParams = ZaloProcessingContext & {
   update: ZaloUpdate;
 };
-function resolveZaloTimestampMs(date: number | undefined): number | undefined {
-  if (!date) {
-    return undefined;
-  }
-  return date >= UNIX_MILLISECONDS_THRESHOLD ? date : date * 1000;
-}
 
 type ZaloMessagePipelineParams = ZaloProcessingContext & {
   message: ZaloMessage;
@@ -122,31 +122,9 @@ type ZaloMessageAuthorizationResult = {
   senderName: string | undefined;
 };
 
-function formatZaloError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? `${error.name}: ${error.message}`;
-  }
-  return String(error);
-}
-
-function describeWebhookTarget(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return rawUrl;
-  }
-}
-
-function logVerbose(core: ZaloCoreRuntime, runtime: ZaloRuntimeEnv, message: string): void {
-  if (core.logging.shouldLogVerbose()) {
-    runtime.log?.(`[zalo] ${message}`);
-  }
-}
-
 async function processUpdate(params: ZaloUpdateProcessingParams): Promise<void> {
   const { update, ...sharedContext } = params;
-  const { account, core, runtime } = sharedContext;
+  const { account, core, runtime, token, fetcher, statusSink } = sharedContext;
   const { event_name, message } = update;
   if (!message) {
     return undefined;
@@ -167,13 +145,32 @@ async function processUpdate(params: ZaloUpdateProcessingParams): Promise<void> 
     case "message.sticker.received":
       logVerbose(core, runtime, `[${account.accountId}] Received sticker from ${message.from.id}`);
       break;
-    case "message.unsupported.received":
+    case "message.unsupported.received": {
       logVerbose(
         core,
         runtime,
         `[${account.accountId}] Received unsupported message type from ${message.from.id}`,
       );
+      if (message.text?.trim()) {
+        // Link previews and other accepted unsupported events still carry usable
+        // text; run them through the normal text pipeline so authorization,
+        // dedupe, and dispatch stay single-owner.
+        await processMessageWithPipeline({ message, text: message.text, ...sharedContext });
+        break;
+      }
+      const authorization = await authorizeZaloMessage({ message, ...sharedContext });
+      if (authorization) {
+        await sendUnsupportedMessageNotice({
+          authorization,
+          accountId: account.accountId,
+          token,
+          fetcher,
+          statusSink,
+          logVerbose: (line) => logVerbose(core, runtime, line),
+        });
+      }
       break;
+    }
   }
 }
 
