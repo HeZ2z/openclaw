@@ -8,6 +8,7 @@ import {
   createChatAbortContext,
   invokeChatAbortHandler,
 } from "./chat.abort.test-helpers.js";
+import type { GatewayRequestContext } from "./types.js";
 
 const reviewMocks = vi.hoisted(() => ({
   cancelSession: vi.fn(),
@@ -114,7 +115,8 @@ describe("explicit chat Stop covers Workshop Experience Review", () => {
     const context = createChatAbortContext({ sources: [[runId, run]] });
 
     const result = await abortChatRunsForSessionKeyWithPartials({
-      context,
+      // The synthetic fixture carries only the abort fields this path reads.
+      context: context as unknown as GatewayRequestContext,
       ops: createChatAbortOps(context),
       sessionKey,
       agentId: "main",
