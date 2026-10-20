@@ -11,6 +11,7 @@ import { t } from "../../../lib/reactive/i18n.ts";
 import { getSafeLocalStorage } from "../../../local-storage.ts";
 import type { FileCopyAction, FileCopyFeedback } from "./chat-file-copy.ts";
 import { FileDownloadButton } from "./chat-file-download-button.tsx";
+import type { FileSaveNotice } from "./chat-file-edit-state.ts";
 import { HtmlPreview, HtmlPreviewSourceFallback } from "./chat-html-preview-view.tsx";
 import type { FileHtmlPreviewControls } from "./chat-html-preview.ts";
 import type { FileSidebarContent, AttachmentSidebarRuntime } from "./chat-sidebar-content-types.ts";
@@ -68,7 +69,7 @@ export type FileViewControls = {
   mountKey: number;
   matches: number[];
   query: string;
-  saveNotice: { kind: "conflict" } | { kind: "error"; message: string } | null;
+  saveNotice: FileSaveNotice | null;
   saving: boolean;
   searchOpen: boolean;
   wrap: boolean;
@@ -315,21 +316,25 @@ export function SidebarFile(props: {
                 const value = notice();
                 return value.kind === "conflict"
                   ? t("chat.detailPanel.fileChanged")
-                  : value.message;
+                  : value.kind === "workspace-changed"
+                    ? t("chat.detailPanel.workspaceChanged")
+                    : value.message;
               })()}
             </span>
-            <Show when={notice().kind === "conflict"}>
+            <Show when={notice().kind !== "error"}>
               <div class="file-view__save-notice-actions">
                 <FileTextAction
                   label={t("common.reload")}
                   onClick={() => props.controls?.onReload()}
                   disabled={props.controls?.saving}
                 />
-                <FileTextAction
-                  label={t("chat.detailPanel.overwrite")}
-                  onClick={() => props.controls?.onOverwrite()}
-                  disabled={props.controls?.saving}
-                />
+                <Show when={notice().kind === "conflict"}>
+                  <FileTextAction
+                    label={t("chat.detailPanel.overwrite")}
+                    onClick={() => props.controls?.onOverwrite()}
+                    disabled={props.controls?.saving}
+                  />
+                </Show>
               </div>
             </Show>
           </div>

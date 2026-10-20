@@ -408,4 +408,55 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(button(panel, "Save").disabled).toBe(true);
     expect(editorOf(panel).getAttribute("contenteditable")).toBe("true");
   });
+
+  it("keeps the draft when its workspace was replaced and requires a reload", async () => {
+    const save = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, code: "workspace-changed" })
+      .mockResolvedValue({ ok: true, hash: "hash-3" });
+    const fetchLatest = vi.fn().mockResolvedValue({
+      content: "replacement",
+      hash: "hash-2",
+      workspaceId: "workspace-2",
+      editable: true,
+    });
+    const panel = await mountFile(
+      editableFile("before", { save, fetchLatest, workspaceId: "workspace-1" }),
+    );
+    const editor = await beginEdit(panel);
+    await userEvent.fill(editor, "local draft");
+    await click(panel, "Save");
+    await expect
+      .poll(() => panel.querySelector(".file-view__save-notice")?.textContent)
+      .toContain("workspace was replaced");
+    const notice = panel.querySelector(".file-view__save-notice");
+    expect(notice?.textContent).not.toContain("Overwrite");
+    expect(
+      [...panel.querySelectorAll("button")].some(
+        (element) => element.textContent?.trim() === "Overwrite",
+      ),
+    ).toBe(false);
+    expect(readFileDraft(panel.content)).toMatchObject({
+      content: "local draft",
+      expectedHash: "hash-1",
+      workspaceId: "workspace-1",
+    });
+    expect(save).toHaveBeenCalledExactlyOnceWith({
+      content: "local draft",
+      expectedHash: "hash-1",
+      workspaceId: "workspace-1",
+    });
+
+    await click(panel, "Reload");
+    await expect.poll(() => editorOf(panel).textContent).toContain("replacement");
+    expect(readFileDraft(panel.content)).toBeUndefined();
+    await userEvent.fill(editor, "new edit");
+    await click(panel, "Save");
+    await expect.poll(() => save.mock.calls.length).toBe(2);
+    expect(save).toHaveBeenLastCalledWith({
+      content: "new edit",
+      expectedHash: "hash-2",
+      workspaceId: "workspace-2",
+    });
+  });
 });

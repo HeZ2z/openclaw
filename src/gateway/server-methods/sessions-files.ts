@@ -47,6 +47,10 @@ import {
   createSessionFileReadAuthority,
   sessionFileWorkspaceMatches,
 } from "./session-file-read-authority.js";
+import {
+  refuseFileWorkspaceChange,
+  resolveFileWorkspaceTarget,
+} from "./session-file-workspace-target.js";
 import { sessionFilesError } from "./session-files-errors.js";
 import {
   getRepositoryArtifact,
@@ -91,27 +95,21 @@ function rejectDeviceFolderFiles(
   return true;
 }
 
+const emptyFileRoot = {
+  root: undefined,
+  fileRoot: undefined,
+  diffCwd: undefined,
+  fileWorkspace: undefined,
+  workspaceIdentity: undefined,
+  workspaceId: undefined,
+} as const;
+
 async function loadSessionFileRoot(loaded: GatewaySessionEntryRead) {
   if (!loaded.entry?.sessionId) {
-    return {
-      ...loaded,
-      agentId: undefined,
-      root: undefined,
-      fileRoot: undefined,
-      diffCwd: undefined,
-      fileWorkspace: undefined,
-      workspaceIdentity: undefined,
-    };
+    return { ...loaded, agentId: undefined, ...emptyFileRoot };
   }
   if (loaded.entry.repositoryWorkspaceId) {
-    return {
-      ...loaded,
-      root: undefined,
-      fileRoot: undefined,
-      diffCwd: undefined,
-      fileWorkspace: undefined,
-      workspaceIdentity: undefined,
-    };
+    return { ...loaded, ...emptyFileRoot };
   }
   const fileWorkspace = await prepareSessionFileWorkspace(
     loaded.cfg,
@@ -120,17 +118,15 @@ async function loadSessionFileRoot(loaded: GatewaySessionEntryRead) {
     loaded.entry,
   );
   const { spawnedCwd, root, diffCwd } = fileWorkspace;
+  const workspaceTarget = resolveFileWorkspaceTarget(loaded.entry.worktree?.id, root);
   return {
     ...loaded,
     fileWorkspace,
     root,
     fileRoot: resolveFileRoot({ root, spawnedCwd }),
     diffCwd,
-    // A save token must bind the exact workspace target: the managed worktree id
-    // alone can survive a reset that changes the root behind the same chat key.
-    workspaceIdentity: loaded.entry.worktree?.id
-      ? `${loaded.entry.worktree.id}\0${root}`
-      : undefined,
+    workspaceIdentity: workspaceTarget.hashScope,
+    workspaceId: workspaceTarget.workspaceId,
   };
 }
 
@@ -253,6 +249,7 @@ async function loadSessionFiles(
     fileRoot: loaded.fileRoot,
     diffCwd: loaded.diffCwd,
     workspaceIdentity: loaded.workspaceIdentity,
+    workspaceId: loaded.workspaceId,
     files: [...files.values()].toSorted((a, b) => {
       if (a.kind !== b.kind) {
         return a.kind === "modified" ? -1 : 1;
@@ -476,6 +473,9 @@ async function handleSessionFilesRead(
                 : {
                     sessionKey: params.sessionKey,
                     ...result,
+                    ...(request.kind === "get" && loaded.workspaceId
+                      ? { workspaceId: loaded.workspaceId }
+                      : {}),
                     ...(repository ? { root: undefined } : {}),
                   },
             );
@@ -559,6 +559,11 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
         }
         if (!loaded.agentId || !loaded.entry?.sessionId) {
           respondSessionFileNotFound(respond, params.path);
+          return;
+        }
+        if (
+          refuseFileWorkspaceChange(respond, params.path, params.workspaceId, loaded.workspaceId)
+        ) {
           return;
         }
         const authorize = () => {

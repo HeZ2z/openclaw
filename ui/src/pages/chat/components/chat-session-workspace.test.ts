@@ -435,6 +435,76 @@ describe("openSessionWorkspaceFile", () => {
     expect(getFile).toHaveBeenLastCalledWith(state.sessionKey, path, { agentId: "main" });
   });
 
+  it("carries the workspace target through save and reload recovery", async () => {
+    const owner = "agent:research:report";
+    const path = "README.md";
+    const setFile = vi
+      .fn<SessionWorkspaceHost["sessions"]["setFile"]>()
+      .mockRejectedValueOnce(
+        new GatewayRequestError({
+          code: "INVALID_REQUEST",
+          message: "session workspace changed since it was read",
+          details: { type: "session_file_conflict", reason: "workspace_changed", path },
+        }),
+      )
+      .mockResolvedValueOnce({
+        sessionKey: owner,
+        root: "/workspace-b",
+        file: workspaceFile(path, { content: "after", hash: "hash-b", kind: "modified" }),
+      });
+    const getFile = vi
+      .fn<SessionWorkspaceHost["sessions"]["getFile"]>()
+      .mockResolvedValueOnce({
+        sessionKey: owner,
+        root: "/workspace-a",
+        workspaceId: "workspace-a",
+        file: textFile(path, "before", { hash: "hash-a" }),
+      })
+      .mockResolvedValueOnce({
+        sessionKey: owner,
+        root: "/workspace-b",
+        workspaceId: "workspace-b",
+        file: textFile(path, "latest", { hash: "hash-b" }),
+      });
+    const state: SessionWorkspaceHost = createHost({
+      client: createGatewayBrowserClientFixture(),
+      connectionEpoch: 1,
+      handleOpenSidebar: createSidebarContentRecorder(),
+      hello: gatewayHelloForMethods(["sessions.files.set"]),
+      sessions: createSessionCapabilityFixture({ getFile, setFile }),
+    });
+    const completed = nextWorkspaceUpdate(
+      state,
+      () => state.sessionWorkspaceState?.previews[0]?.content.kind === "file",
+    );
+    openSessionWorkspaceFile(state, { path, sessionKey: owner });
+    await completed;
+    const file = await loadedSidebarContent(state);
+    if (file.kind !== "file" || !file.edit) {
+      throw new Error("Expected an editable workspace file");
+    }
+    expect(file.edit.workspaceId).toBe("workspace-a");
+
+    const outcome = await file.edit.save({
+      content: "draft",
+      expectedHash: "hash-a",
+      workspaceId: file.edit.workspaceId,
+    });
+    expect(outcome).toEqual({ ok: false, code: "workspace-changed" });
+    expect(setFile).toHaveBeenCalledWith(owner, path, "draft", {
+      agentId: "research",
+      expectedHash: "hash-a",
+      workspaceId: "workspace-a",
+    });
+
+    await expect(file.edit.fetchLatest()).resolves.toEqual({
+      content: "latest",
+      hash: "hash-b",
+      workspaceId: "workspace-b",
+      editable: true,
+    });
+  });
+
   it("preserves existing Review content when the Gateway is disconnected", () => {
     const existingContent = {
       kind: "markdown",

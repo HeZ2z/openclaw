@@ -266,6 +266,11 @@ export const SessionsFilesGetParamsSchema = closedObject({
 export const SessionsFilesGetResultSchema = closedObject({
   sessionKey: NonEmptyString,
   root: Type.Optional(NonEmptyString),
+  /**
+   * Opaque identity of the workspace target that produced `file.hash`.
+   * Echo it on `sessions.files.set`; a mismatch means the target was replaced.
+   */
+  workspaceId: Type.Optional(NonEmptyString),
   file: SessionFileEntrySchema,
 });
 
@@ -319,6 +324,8 @@ export const SessionsFilesSetParamsSchema = closedObject({
   ...SessionsFilesGetParamsSchema.properties,
   content: Type.String(),
   expectedHash: SessionFileHashSchema,
+  /** Workspace identity captured with `expectedHash`; a changed target is refused. */
+  workspaceId: Type.Optional(NonEmptyString),
 });
 
 export const SessionsFilesSetResultSchema = closedObject(SessionsFilesGetResultSchema.properties);

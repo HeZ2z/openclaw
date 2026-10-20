@@ -32,6 +32,8 @@ const catalog = {
       fullContentUnavailable: "Full content is no longer available for this transcript entry.",
       copyContents: "Copy file contents",
       fileChanged: "File changed on disk since it was loaded.",
+      workspaceChanged:
+        "This chat's workspace was replaced, so this draft belongs to the previous workspace and can't be saved here. Reload to open the current file.",
       renderPreview: "Render preview",
       imagePreview: "Image preview",
       file: "File",

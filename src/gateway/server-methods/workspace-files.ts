@@ -40,6 +40,8 @@ export type LoadedSessionFiles = SessionFileReadBoundary & {
   files: TouchedFile[];
   /** Managed-worktree identity that owns the session's current file target. */
   workspaceIdentity?: string;
+  /** Opaque identity of the same target, echoed by reads and required by saves. */
+  workspaceId?: string;
 };
 const MAX_BROWSER_ENTRIES = 250;
 const MAX_SEARCH_ENTRIES = 500;

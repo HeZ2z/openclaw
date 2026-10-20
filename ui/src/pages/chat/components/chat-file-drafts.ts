@@ -7,9 +7,11 @@ import { reviewFileDrafts } from "./file-draft-recovery-dialog.ts";
 
 registerFilePreviewEnglish();
 
-type RetainedFileDraft = {
+export type RetainedFileDraft = {
   content: string;
   expectedHash: string;
+  /** Workspace target the draft content was read from; it can be replaced later. */
+  workspaceId?: string;
 };
 
 const retainedFileDrafts = new Map<
@@ -62,16 +64,26 @@ export function readFileDraft(content: FileSidebarContent): RetainedFileDraft | 
 
 export function captureFileEditorDraft(
   content: FileSidebarContent,
-  edit: { editing: boolean; content: string; dirty: boolean; expectedHash: string },
-): { dirty: boolean; expectedHash: string } | null {
+  edit: {
+    editing: boolean;
+    content: string;
+    dirty: boolean;
+    expectedHash: string;
+    workspaceId?: string;
+  },
+): { dirty: boolean; expectedHash: string; workspaceId?: string } | null {
   // Read-only rendering may normalize line endings; only edits own drafts.
   if (!edit.editing) {
     return null;
   }
   const { dirty } = edit;
   const expectedHash = dirty ? edit.expectedHash : (content.edit?.hash ?? "");
-  setFileDraft(content, dirty ? { content: edit.content, expectedHash } : null);
-  return { dirty, expectedHash };
+  const workspaceId = dirty ? edit.workspaceId : content.edit?.workspaceId;
+  setFileDraft(
+    content,
+    dirty ? { content: edit.content, expectedHash, ...(workspaceId ? { workspaceId } : {}) } : null,
+  );
+  return { dirty, expectedHash, ...(workspaceId ? { workspaceId } : {}) };
 }
 
 export function setFileDraft(content: FileSidebarContent, draft: RetainedFileDraft | null) {

@@ -17,7 +17,16 @@ import { defineSolidBridge } from "../../../lib/solid-bridge.ts";
 import { createSolidRenderLifecycle } from "../solid-render-lifecycle.ts";
 import { createAttachmentDownload } from "./chat-attachment-download.ts";
 import { createFileCopy } from "./chat-file-copy.ts";
-import { captureFileEditorDraft, readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
+import { readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
+import {
+  applyFileSaved,
+  beginFileEdit,
+  captureFileEditChange,
+  createFileEditState,
+  discardFileEdit,
+  restoreFileEditState,
+  saveFileEdit,
+} from "./chat-file-edit-state.ts";
 import { createFileHtmlPreview } from "./chat-html-preview.ts";
 import type {
   ChatDetailPanelProps,
@@ -65,10 +74,9 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
   const fileCopy = createFileCopy(() => visibleContent, isConnected);
   let fileEditorLoading = false;
   let fileEditing = false;
-  let fileDirty = false;
   let fileReloading = false;
   let fileSaving = false;
-  let fileSaveNotice: { kind: "conflict" } | { kind: "error"; message: string } | null = null;
+  const fileEdit = createFileEditState();
 
   const htmlPreview = createFileHtmlPreview(
     () => props.content,
@@ -83,9 +91,11 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
   let searchInput: HTMLInputElement | undefined;
   let searchToggle: HTMLButtonElement | undefined;
   let fileEditorLoad: Promise<void> | null = null;
-  let fileDraftContent: string | null = null;
-  let fileSavedContent = "";
-  let fileHash = "";
+  const fileEditEditor = {
+    currentText: currentFileText,
+    hasEditor: () => Boolean(fileEditor),
+    contentEquals: (text: string) => fileEditor?.contentEquals(text),
+  };
   const attachmentDownload = createAttachmentDownload(
     () => (props.content === visibleContent ? props.content : null),
     () => props.attachmentRuntime,
@@ -125,7 +135,6 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
     fileOperationVersion += 1;
     fileReloading = false;
     fileSaving = false;
-    fileSaveNotice = null;
     const retainedDraft =
       content?.kind === "file" && content.edit ? readFileDraft(content) : undefined;
     const restoredDraft =
@@ -135,12 +144,8 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
     if (retainedDraft && !restoredDraft && content?.kind === "file") {
       setFileDraft(content, null);
     }
-    fileDraftContent = restoredDraft?.content ?? null;
-    fileSavedContent = content?.kind === "file" ? content.content : "";
-    fileHash =
-      restoredDraft?.expectedHash ?? (content?.kind === "file" ? (content.edit?.hash ?? "") : "");
+    restoreFileEditState(fileEdit, content?.kind === "file" ? content : null, restoredDraft);
     fileEditing = Boolean(restoredDraft);
-    fileDirty = Boolean(restoredDraft);
     fileEditorLoading = content?.kind === "file" && !htmlPreview.showing;
     destroyFileEditor();
   }
@@ -160,7 +165,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
   function currentFileText(): string {
     return (
       fileEditor?.getContent() ??
-      fileDraftContent ??
+      fileEdit.draftContent ??
       (visibleContent?.kind === "file" ? visibleContent.content : "")
     );
   }
@@ -206,7 +211,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
         }
         const editor = await createFileEditorView({
           parent,
-          content: fileDraftContent ?? content.content,
+          content: fileEdit.draftContent ?? content.content,
           name: content.name,
           editable: fileEditing,
           wrap: fileWrap,
@@ -219,24 +224,17 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
         // Reload may settle while the editor awaits its language support.
         editor.setContent(currentFileText());
         fileEditor = editor;
-        fileDraftContent = null;
+        fileEdit.draftContent = null;
         editor.onDocChanged((nextContent) => {
-          const draft = captureFileEditorDraft(content, {
-            // Reload synchronization may normalize display text without a user edit.
+          // Reload synchronization may normalize display text without a user edit.
+          const changed = captureFileEditChange(fileEdit, content, {
             editing: fileEditing && !fileReloading,
             content: nextContent,
-            dirty: !editor.contentEquals(fileSavedContent),
-            expectedHash: fileHash,
+            dirty: !editor.contentEquals(fileEdit.savedContent),
           });
-          if (!draft) {
-            return;
+          if (changed) {
+            invalidate();
           }
-          fileDirty = draft.dirty;
-          fileHash = draft.expectedHash;
-          if (fileSaveNotice?.kind === "error") {
-            fileSaveNotice = null;
-          }
-          invalidate();
         });
       })
       .catch((cause: unknown) => {
@@ -383,10 +381,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
       fileEditor.focus();
       return;
     }
-    fileSavedContent = content.content;
-    fileHash = content.edit.hash;
-    fileDirty = false;
-    fileSaveNotice = null;
+    beginFileEdit(fileEdit, content);
     fileSearchOpen = false;
     fileSearchQuery = "";
     fileSearchMatchIndex = 0;
@@ -400,69 +395,64 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
     if (!fileEditing || fileSaving) {
       return;
     }
-    fileEditor?.setContent(fileSavedContent);
-    fileDraftContent = null;
-    htmlPreview.discard(fileSavedContent);
+    fileEditor?.setContent(fileEdit.savedContent);
+    htmlPreview.discard(fileEdit.savedContent);
     const content = visibleContent;
     if (content?.kind === "file") {
-      setFileDraft(content, null);
-      fileHash = content.edit?.hash ?? "";
+      discardFileEdit(fileEdit, content);
     }
-    fileDirty = false;
-    fileSaveNotice = null;
     fileEditing = false;
     fileEditor?.setEditable(false);
     invalidate();
   };
 
-  function updateSavedFile(content: FileSidebarContent, nextContent: string, hash: string) {
-    const draftContent = currentFileText();
-    fileSavedContent = nextContent;
-    fileHash = hash;
-    fileDirty = !(fileEditor?.contentEquals(nextContent) ?? draftContent === nextContent);
-    fileDraftContent = !fileEditor && fileDirty ? draftContent : null;
-    setFileDraft(content, fileDirty ? { content: draftContent, expectedHash: hash } : null);
-    fileSaveNotice = null;
-    // The retained file tab owns the saved buffer used by later reads and opens.
-    content.content = nextContent;
-    content.rawText = nextContent;
-    if (content.edit) {
-      content.edit.hash = hash;
-    }
+  function updateSavedFile(
+    content: FileSidebarContent,
+    nextContent: string,
+    hash: string,
+    workspaceId: string | undefined,
+  ) {
+    applyFileSaved(fileEdit, content, nextContent, hash, workspaceId, fileEditEditor);
   }
 
-  async function saveFileContent(
+  function saveFileContent(
     content: FileSidebarContent,
     nextContent: string,
     expectedHash: string,
+    workspaceId: string | undefined,
     version: number,
   ) {
-    if (!content.edit) {
-      return;
-    }
-    const outcome = await content.edit.save({ content: nextContent, expectedHash });
-    if (version !== fileOperationVersion) {
-      return;
-    }
-    if (outcome.ok) {
-      updateSavedFile(content, nextContent, outcome.hash);
-    } else if (outcome.code === "conflict") {
-      fileSaveNotice = { kind: "conflict" };
-    } else {
-      fileSaveNotice = { kind: "error", message: outcome.message };
-    }
+    return saveFileEdit({
+      state: fileEdit,
+      content,
+      nextContent,
+      expectedHash,
+      workspaceId,
+      version,
+      isCurrentVersion: (candidate) => candidate === fileOperationVersion,
+      editor: fileEditEditor,
+    });
   }
 
   const saveFile = () => {
     const content = visibleContent;
-    if (content?.kind !== "file" || !content.edit || !fileEditing || !fileDirty || fileSaving) {
+    if (
+      content?.kind !== "file" ||
+      !content.edit ||
+      !fileEditing ||
+      !fileEdit.dirty ||
+      fileSaving
+    ) {
       return;
     }
     const version = fileOperationVersion;
     fileSaving = true;
-    fileSaveNotice = null;
+    fileEdit.notice = null;
     invalidate();
-    trackFileOperation(saveFileContent(content, currentFileText(), fileHash, version), version);
+    trackFileOperation(
+      saveFileContent(content, currentFileText(), fileEdit.hash, fileEdit.workspaceId, version),
+      version,
+    );
   };
 
   const reloadFile = () => startLatestFileOperation("reload");
@@ -476,6 +466,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
     }
     const version = fileOperationVersion;
     const localContent = currentFileText();
+    const localWorkspaceId = fileEdit.workspaceId;
     fileSaving = true;
     fileReloading = action === "reload";
     if (fileReloading) {
@@ -488,7 +479,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
           return;
         }
         if (!latest) {
-          fileSaveNotice = {
+          fileEdit.notice = {
             kind: "error",
             message: t(
               action === "reload"
@@ -499,21 +490,22 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
           return;
         }
         if (action === "overwrite") {
-          // Overwrite uses the local text captured at the user's click, not the fetched text.
-          await saveFileContent(content, localContent, latest.hash, version);
+          // Overwrite uses the local text and workspace target captured at the
+          // user's click, not the fetched target; a replacement workspace refuses it.
+          await saveFileContent(content, localContent, latest.hash, localWorkspaceId, version);
           return;
         }
         fileEditor?.setContent(latest.content);
-        fileDraftContent = fileEditor ? null : latest.content;
+        fileEdit.draftContent = fileEditor ? null : latest.content;
         htmlPreview.discard(latest.content);
-        updateSavedFile(content, latest.content, latest.hash);
+        updateSavedFile(content, latest.content, latest.hash, latest.workspaceId);
         // A reload can bring back content that no longer qualifies for edit
         // mode (e.g. the agent rewrote the file with mixed line endings);
         // drop the edit capability instead of letting a save corrupt it.
         if (!latest.editable) {
           setFileDraft(content, null);
           fileEditing = false;
-          fileDirty = false;
+          fileEdit.dirty = false;
           const { edit: _removed, ...readOnly } = content;
           visibleContent = readOnly;
         }
@@ -526,7 +518,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
     void operation
       .catch((cause: unknown) => {
         if (version === fileOperationVersion) {
-          fileSaveNotice = { kind: "error", message: formatUiError(cause) };
+          fileEdit.notice = { kind: "error", message: formatUiError(cause) };
         }
       })
       .finally(() => {
@@ -621,7 +613,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
           searchToggle = element;
         },
         currentMatchIndex,
-        dirty: fileDirty,
+        dirty: fileEdit.dirty,
         execNode: props.execNode,
         editorMenuOpen: fileEditorMenuOpen,
         editing: fileEditing,
@@ -629,7 +621,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
         mountKey: fileOperationVersion,
         matches,
         query: fileSearchQuery,
-        saveNotice: fileSaveNotice,
+        saveNotice: fileEdit.notice,
         saving: fileSaving,
         searchOpen: fileSearchOpen,
         wrap: fileWrap,
@@ -688,8 +680,8 @@ function DetailPanel(props: ChatDetailPanelProps, host: SolidBridgeElement<ChatD
   );
   onCleanup(() => {
     disposed = true;
-    if (fileDirty) {
-      fileDraftContent = currentFileText();
+    if (fileEdit.dirty) {
+      fileEdit.draftContent = currentFileText();
     }
     destroyFileEditor();
   });

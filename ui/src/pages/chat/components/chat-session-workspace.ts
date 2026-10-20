@@ -280,7 +280,16 @@ function openFile(
       const edit = canEdit
         ? {
             hash: file.hash!,
-            save: async ({ content, expectedHash }: { content: string; expectedHash: string }) => {
+            ...(result.workspaceId ? { workspaceId: result.workspaceId } : {}),
+            save: async ({
+              content,
+              expectedHash,
+              workspaceId,
+            }: {
+              content: string;
+              expectedHash: string;
+              workspaceId?: string;
+            }) => {
               try {
                 const saved = await state.sessions.setFile(
                   result.sessionKey,
@@ -289,6 +298,7 @@ function openFile(
                   {
                     agentId,
                     expectedHash,
+                    ...(workspaceId ? { workspaceId } : {}),
                   },
                 );
                 const hash = saved?.file.hash;
@@ -310,13 +320,18 @@ function openFile(
                   error instanceof GatewayRequestError &&
                   error.details &&
                   typeof error.details === "object"
-                    ? (error.details as { type?: unknown })
+                    ? (error.details as { type?: unknown; reason?: unknown })
                     : null;
                 if (details?.type === "session_file_conflict") {
-                  return {
-                    ok: false as const,
-                    code: "conflict" as const,
-                  };
+                  return details.reason === "workspace_changed"
+                    ? {
+                        ok: false as const,
+                        code: "workspace-changed" as const,
+                      }
+                    : {
+                        ok: false as const,
+                        code: "conflict" as const,
+                      };
                 }
                 return {
                   ok: false as const,
@@ -340,6 +355,7 @@ function openFile(
               return {
                 content: latestFile.content,
                 hash: latestFile.hash,
+                ...(latest.workspaceId ? { workspaceId: latest.workspaceId } : {}),
                 // Reloaded content re-passes the uniform-endings gate so a
                 // conflict reload cannot smuggle mixed endings into edit mode.
                 editable: hasUniformLineEndings(latestFile.content),

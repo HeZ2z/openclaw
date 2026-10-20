@@ -116,13 +116,26 @@ type SessionDiffSidebarContent = {
 type FileSaveOutcome =
   | { ok: true; hash: string }
   | { ok: false; code: "conflict" }
+  /** The draft belongs to a workspace target that was replaced; reopen before saving. */
+  | { ok: false; code: "workspace-changed" }
   | { ok: false; code: "error"; message: string };
 
 type FileSidebarEdit = {
   hash: string;
-  save: (params: { content: string; expectedHash: string }) => Promise<FileSaveOutcome>;
+  /** Workspace target identity captured with this saved content's `hash`. */
+  workspaceId?: string;
+  save: (params: {
+    content: string;
+    expectedHash: string;
+    workspaceId?: string;
+  }) => Promise<FileSaveOutcome>;
   /** `editable: false` means the latest content no longer qualifies for edit mode. */
-  fetchLatest: () => Promise<{ content: string; hash: string; editable: boolean } | null>;
+  fetchLatest: () => Promise<{
+    content: string;
+    hash: string;
+    workspaceId?: string;
+    editable: boolean;
+  } | null>;
 };
 
 export type FileSidebarNavigation = { line: number };
