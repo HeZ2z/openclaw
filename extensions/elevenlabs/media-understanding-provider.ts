@@ -15,6 +15,24 @@ import { DEFAULT_ELEVENLABS_BASE_URL, normalizeElevenLabsBaseUrl } from "./share
 
 const DEFAULT_ELEVENLABS_STT_MODEL = "scribe_v2";
 
+const ELEVENLABS_STT_QUERY_FIELDS = ["no_verbatim", "tag_audio_events", "diarize"] as const;
+
+type ElevenLabsSttQueryField = (typeof ELEVENLABS_STT_QUERY_FIELDS)[number];
+
+/** Forwards the allowlisted synchronous transcription options, ignoring other response-changing fields. */
+function resolveElevenLabsSttQueryFields(
+  query: AudioTranscriptionRequest["query"],
+): Partial<Record<ElevenLabsSttQueryField, string | number | boolean>> {
+  const fields: Partial<Record<ElevenLabsSttQueryField, string | number | boolean>> = {};
+  for (const key of ELEVENLABS_STT_QUERY_FIELDS) {
+    const value = query?.[key];
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      fields[key] = value;
+    }
+  }
+  return fields;
+}
+
 async function transcribeElevenLabsAudio(
   req: AudioTranscriptionRequest,
 ): Promise<AudioTranscriptionResult> {
@@ -44,6 +62,7 @@ async function transcribeElevenLabsAudio(
     fileName: req.fileName,
     mime: req.mime,
     fields: {
+      ...resolveElevenLabsSttQueryFields(req.query),
       model_id: model,
       language_code: req.language,
       prompt: req.prompt,
