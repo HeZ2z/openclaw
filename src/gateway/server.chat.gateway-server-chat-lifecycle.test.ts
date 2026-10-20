@@ -455,6 +455,97 @@ describe("gateway server chat lifecycle", () => {
     });
   });
 
+  test("chat.send publishes one terminal when the message tool owns an unkeyed transcript reply", async () => {
+    await withMainSessionStore(async () => {
+      const runId = "message-tool-unkeyed-owned-terminal";
+      const sessionKey = "agent:main:main";
+      const progress = "Both A and B are still running.";
+      const answer = "Both subagents finished.";
+      const terminals: Array<Record<string, unknown>> = [];
+      const collectTerminal = (data: RawData) => {
+        const frame = JSON.parse(rawDataToString(data)) as {
+          event?: string;
+          payload?: Record<string, unknown>;
+        };
+        if (
+          frame.event === "chat" &&
+          frame.payload?.runId === runId &&
+          ["aborted", "error", "final"].includes(String(frame.payload.state))
+        ) {
+          terminals.push(frame.payload);
+        }
+      };
+      const execution = runEmbeddedAgent.mockImplementation(async (params) => {
+        expect(params).toMatchObject({ deferTerminalLifecycle: true, sessionKey });
+        const publish = async (
+          stream: "lifecycle" | "assistant",
+          data: Record<string, unknown>,
+        ) => {
+          await params.onAgentEvent?.({ stream, data });
+          emitAgentEvent({ runId, stream, data });
+        };
+        await publish("lifecycle", { phase: "start", startedAt: 1 });
+        // A native runtime reports its start without a reply-dispatch owner, so chat.send
+        // reaches source-reply finalization after the run.
+        params.onExecutionPhase?.({ phase: "turn_accepted" });
+        const payloads: MessagingToolSourceReplyPayload[] = [
+          { text: progress, sourceReplyFinal: false, transcriptOwner: true },
+          { text: answer, sourceReplyFinal: true, transcriptOwner: true },
+        ];
+        for (const payload of payloads) {
+          await persistInternalSourceReply({
+            cfg: params.config ?? {},
+            sessionKey,
+            expectedSessionId: params.sessionId,
+            agentId: "main",
+            payload: { text: payload.text },
+            runId,
+            sourceReplyFinal: payload.sourceReplyFinal,
+          });
+        }
+        await publish("assistant", { text: answer, delta: answer });
+        await publish("lifecycle", { phase: "finishing", startedAt: 1, endedAt: 2 });
+        return {
+          sourceReplyDeliveryState: "delivered" as const,
+          messagingToolSourceReplyPayloads: payloads,
+          payloads: buildSourceReplyPayloadState({
+            payloads,
+            sessionKey,
+            agentId: "main",
+          }).replyItems,
+          meta: {
+            durationMs: 1,
+            terminalReply: { disposition: "visible" as const, text: answer },
+            finalAssistantVisibleText: answer,
+          },
+        };
+      });
+      mockGetReplyFromConfigOnce((...args) => getReplyFromConfig(...args));
+
+      expect((await rpcReq(ws, "sessions.subscribe", {})).ok).toBe(true);
+      ws.on("message", collectTerminal);
+      try {
+        await sendChatAndExpectStarted(runId, "check on the subagents");
+        await waitForAgentRunDrained(runId);
+      } finally {
+        ws.off("message", collectTerminal);
+      }
+
+      expect(execution).toHaveBeenCalledOnce();
+      expect(terminals, JSON.stringify(terminals)).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        state: "final",
+        message: { content: [{ type: "text", text: answer }] },
+      });
+      // The single live terminal matches the two rows the message tool persisted; a later
+      // history snapshot has nothing unsequenced to resurrect under the next prompt.
+      const history = await rpcReq(ws, "chat.history", { sessionKey, limit: 50 });
+      expect(history.ok).toBe(true);
+      const historyMessages = (history.payload as { messages?: Array<{ role?: string }> }).messages;
+      expect(historyMessages?.filter((message) => message.role === "assistant")).toHaveLength(2);
+    });
+  });
+
   test("agent events include sessionKey and agent.wait preserves lifecycle metadata", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
     testState.sessionStorePath = path.join(dir, "sessions.json");

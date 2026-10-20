@@ -3,6 +3,7 @@ import {
   getReplyPayloadMetadata,
   isHostNoticePayload,
   isReplyPayloadStatusNotice,
+  type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
 import type { QueuedFollowupReplyBatch } from "../../auto-reply/reply/queue/types.js";
 import type { ReplyDispatchOperation } from "../../auto-reply/reply/reply-dispatcher.types.js";
@@ -70,6 +71,15 @@ function selectChatSendAgentReplyInputs(params: {
 type ChatSendAgentReplyFinalization =
   | { kind: "delivered"; hasSourceReplyTranscriptMirror: boolean }
   | { kind: "dropped"; reason: "no-visible-content" };
+
+/**
+ * A transcript-owned mirror was already persisted and published by its delivery tool.
+ * That recorded fact, not a later idempotency lookup, decides whether this finalizer may
+ * broadcast the reply again. Media rewriting still runs for these payloads.
+ */
+function isTranscriptOwnedSourceReply(payload: ReplyPayload | undefined): boolean {
+  return getReplyPayloadMetadata(payload)?.sourceReplyTranscriptMirror?.transcriptOwner === true;
+}
 
 export function createChatSendLateReplyFinalizer(
   params: Omit<ChatSendReplyFinalizationParams, "emitFirstAssistantServerTiming">,
@@ -311,7 +321,8 @@ async function finalizeChatSendAgentReplyPayloads(
     );
     mediaScope.assertCurrent();
     const hasCommittedSourceReply = committedSourceContent.some(Boolean);
-    const { finalInputsByIndex, sourceReplyContentStates, sourceReplyBroadcastContent } =
+    const hasTranscriptOwnedSourceReply = agentRunReplyPayloads.some(isTranscriptOwnedSourceReply);
+    const { broadcastInputs, sourceReplyContentStates, sourceReplyBroadcastContent } =
       await withPreparedWebchatReplyMedia(
         {
           scope: mediaScope,
@@ -324,8 +335,9 @@ async function finalizeChatSendAgentReplyPayloads(
         async ({ payloads: normalizedPayloads, inputsByIndex, buildContent }) => {
           const contentStates: SourceReplyContentState[] = [];
           const broadcastContent: AssistantDisplayContentBlock[] = [];
+          const broadcastReplyInputs: ReplyDispatchOperation[] = [];
           let preparedIndex = 0;
-          for (const [replyIndex] of agentRunReplyPayloads.entries()) {
+          for (const [replyIndex, replyPayload] of agentRunReplyPayloads.entries()) {
             const committedContent = committedSourceContent[replyIndex];
             if (committedContent) {
               // The committed row already owns session.message/history delivery.
@@ -354,10 +366,18 @@ async function finalizeChatSendAgentReplyPayloads(
               backedManagedOutgoingContent: false,
             };
             contentStates[replyIndex] = state;
+            if (isTranscriptOwnedSourceReply(replyPayload)) {
+              // The delivery tool persisted and published this row itself. Retain its
+              // prepared content for media rewrite, but never re-broadcast it as a
+              // second terminal for the run.
+              state.broadcastContent = [];
+              continue;
+            }
             broadcastContent.push(...state.broadcastContent);
+            broadcastReplyInputs.push(...(inputsByIndex[inputIndex] ?? []));
           }
           return {
-            finalInputsByIndex: inputsByIndex,
+            broadcastInputs: broadcastReplyInputs,
             sourceReplyContentStates: contentStates,
             sourceReplyBroadcastContent: broadcastContent,
           };
@@ -366,11 +386,12 @@ async function finalizeChatSendAgentReplyPayloads(
 
     const displayReply =
       extractAssistantDisplayText(sourceReplyBroadcastContent) ??
-      buildTranscriptReplyTextFromInputs(finalInputsByIndex.flat());
+      buildTranscriptReplyTextFromInputs(broadcastInputs);
     if (
       !sourceReplyBroadcastContent.length &&
       !displayReply &&
       !hasCommittedSourceReply &&
+      !hasTranscriptOwnedSourceReply &&
       !hasRuntimeOwnedReply
     ) {
       return { kind: "dropped", reason: "no-visible-content" };
