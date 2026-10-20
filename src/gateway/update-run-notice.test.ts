@@ -279,7 +279,10 @@ describe("host-owned update notices", () => {
     const target = noticeTarget();
     await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
     const run = createUpdateRun({ trigger: "chat", origin: { sessionKey: target.sessionKey } });
-    finishUpdateRun(run.runId, { status: "succeeded" });
+    const finished = finishUpdateRun(run.runId, { status: "succeeded" });
+    if (!finished) {
+      throw new Error("Missing finished update");
+    }
     const inProgressText = renderUpdateRunNotice(
       { status: "running", reason: null, phase: "verifying" },
       "verifying",
@@ -299,7 +302,9 @@ describe("host-owned update notices", () => {
     ).toMatchObject({ ok: true });
 
     const notify = await createUpdateRunNotifier(run, () => ({}), {});
-    expect(await notify(run, "finished")).toEqual({ delivered: false, owned: false });
+    // The terminal snapshot is what reaches the notifier; the non-terminal
+    // admitted message under the same key must reject it, not skip rendering.
+    expect(await notify(finished, "finished")).toEqual({ delivered: false, owned: false });
     expect(getUpdateRun(run.runId)?.verification.noticeDelivered).not.toBe(true);
 
     const messages = (await loadTranscriptEvents(target)).filter(
