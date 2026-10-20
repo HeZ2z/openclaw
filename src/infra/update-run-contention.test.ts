@@ -5,9 +5,11 @@ import { createUpdateCommandExecutionGuards } from "../cli/update-cli/update-com
 import * as existingWrites from "../state/openclaw-state-db-existing-write.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import * as stateWorker from "../state/openclaw-state-worker-store.js";
 import { isPostgresSqlConnection } from "./sql-connection.js";
 import { readSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
+import { SqliteWorkerError } from "./sqlite-worker-contract.js";
 import {
   createSqliteWorkerOperationAdmission,
   withSqliteWorkerOperationAdmission,
@@ -28,6 +30,7 @@ import {
   recordUpdateRunMutationInWorker,
 } from "./update-run-mutation.worker.js";
 import { reconcileUpdateRunCandidatesInWorker } from "./update-run-reconciliation.worker.js";
+import { recordUpdateRunPhaseAsync, recordUpdateRunStepAsync } from "./update-run-write.async.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterAll);
 let options: { env: { HOME: string; OPENCLAW_STATE_DIR: string } };
@@ -345,4 +348,58 @@ it("does not replay or discard a lock failure after transaction admission", () =
   ).toThrow(cause);
   expect(admit.mock.calls).toEqual([["transaction"], ["commit"]]);
   expect(getUpdateRun(runId, options)?.steps).toHaveLength(1);
+});
+
+function workerOverload() {
+  return new SqliteWorkerError("SQLite worker queue capacity reached", "overloaded");
+}
+
+function rejectWorkerOnce(error: unknown) {
+  return vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockRejectedValueOnce(error);
+}
+
+it("continues when optional step bookkeeping hits worker overload", async () => {
+  rejectWorkerOnce(workerOverload());
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  await expect(
+    recordUpdateRunStepAsync(
+      runId,
+      { step: "candidate-state-snapshot", status: "in_progress" },
+      options,
+    ),
+  ).resolves.toBeUndefined();
+  expect(warn).toHaveBeenCalledExactlyOnceWith(
+    expect.stringContaining(
+      "Update history admission is saturated; bookkeeping was not recorded. The update will continue.",
+    ),
+  );
+});
+
+it.each([
+  ["required", { step: "post-update verification", status: "completed" }],
+  ["failed", { step: "candidate-state-snapshot", status: "failed" }],
+] as const)("rejects worker overload for %s step bookkeeping", async (_kind, step) => {
+  const overload = workerOverload();
+  rejectWorkerOnce(overload);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  await expect(recordUpdateRunStepAsync(runId, step, options)).rejects.toBe(overload);
+  expect(warn).not.toHaveBeenCalled();
+});
+
+it("rejects a non-overload failure for an optional step", async () => {
+  const failure = new Error("fixture worker failure");
+  rejectWorkerOnce(failure);
+  await expect(
+    recordUpdateRunStepAsync(
+      runId,
+      { step: "candidate-state-snapshot", status: "in_progress" },
+      options,
+    ),
+  ).rejects.toBe(failure);
+});
+
+it("rejects worker overload for required update phase bookkeeping", async () => {
+  const overload = workerOverload();
+  rejectWorkerOnce(overload);
+  await expect(recordUpdateRunPhaseAsync(runId, "activating", {}, options)).rejects.toBe(overload);
 });

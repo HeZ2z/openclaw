@@ -91,6 +91,7 @@ export function registerCanaryProgressWorkerTests(
     "source-replaced",
     "interrupted-after-acceptance",
     "uncertain",
+    "overloaded-progress",
   ] as const)(
     "persists streamed candidate progress through its admitted worker (%s)",
     async (outcome) => {
@@ -179,11 +180,21 @@ export function registerCanaryProgressWorkerTests(
         "receipt acknowledgement unavailable",
         "outcome-unknown",
       );
+      const overloaded = new SqliteWorkerError(
+        "SQLite worker queue capacity reached",
+        "overloaded",
+      );
       const runWorker = stateWorker.runOpenClawStateWorkerOperation;
       const worker = vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation");
       if (outcome === "uncertain") {
         worker.mockImplementationOnce(runWorker).mockRejectedValueOnce(unknown);
+      } else if (outcome === "overloaded-progress") {
+        worker.mockImplementationOnce(runWorker).mockRejectedValueOnce(overloaded);
       }
+      const warn =
+        outcome === "overloaded-progress"
+          ? vi.spyOn(console, "warn").mockImplementation(() => {})
+          : undefined;
       let commits = 0;
       admission.beforeGrant = (stage) => {
         // Initial admission warms the writer before streamed snapshot receipts.
@@ -252,6 +263,13 @@ export function registerCanaryProgressWorkerTests(
         expect(commits).toBeGreaterThanOrEqual(2);
         const saved = await getUpdateRunAsync(run.runId, { env });
         expect(result.status).toBe("ok");
+        if (outcome === "overloaded-progress") {
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining("Update history admission is saturated"),
+          );
+          expect(mocks.spawn).toHaveBeenCalled();
+          expect(saved?.steps).toContainEqual(expect.objectContaining(snapshotStep));
+        }
         const checks = [
           "candidate-doctor",
           "candidate-doctor-lint",
@@ -288,6 +306,7 @@ export function registerCanaryProgressWorkerTests(
         for (const mock of [prepare, exec, worker, stdout, stderr]) {
           mock.mockRestore();
         }
+        warn?.mockRestore();
         // Effect guards still read recovery on the host; only ledger DML and worker admission are fenced here.
         expect(unexpectedSql).toEqual([]);
         if (outcome === "uncertain") {

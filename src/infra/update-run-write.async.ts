@@ -8,7 +8,7 @@ import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import { hasSqliteWorkerOutcomeUnknown } from "./sqlite-worker-contract.js";
+import { hasSqliteWorkerOutcomeUnknown, isSqliteWorkerError } from "./sqlite-worker-contract.js";
 import { createSqliteWorkerWriteAdmission } from "./sqlite-worker-store.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
 import { captureUpdateRunRedactionFacts, type UpdateRunLedgerOptions } from "./update-run-codec.js";
@@ -26,6 +26,7 @@ import type {
   UpdateRunStep,
 } from "./update-run-record.js";
 import { UpdateRecoveryRequiredError } from "./update-run-recovery-schema.js";
+import { isRequiredUpdateRunStep } from "./update-run-write.js";
 
 export type UpdateRunWriteOptions = UpdateRunLedgerOptions & {
   context?: OpenClawStateWorkerContext;
@@ -43,6 +44,7 @@ async function recordUpdateRunMutationAsync(
   runId: string,
   createCommand: (input: UpdateRunWriteInput) => UpdateRunWriteCommand,
   options: UpdateRunWriteOptions = {},
+  optionalBookkeeping = false,
 ): Promise<UpdateRunRecord | undefined> {
   options.assertAccepting?.();
   if (options.database || options.readOnly) {
@@ -76,15 +78,38 @@ async function recordUpdateRunMutationAsync(
       context.admission.databasePath,
     ]),
   });
-  const completion = pending.catch((error: unknown) => {
-    if (hasSqliteWorkerOutcomeUnknown(error) && !hasCommandProcessCleanupError(error)) {
-      throw new CommandProcessCleanupError({ cause: error });
-    }
-    throw error;
-  });
+  let skipped = false;
+  const completion = pending
+    .catch((error: unknown) => {
+      if (hasSqliteWorkerOutcomeUnknown(error) && !hasCommandProcessCleanupError(error)) {
+        throw new CommandProcessCleanupError({ cause: error });
+      }
+      throw error;
+    })
+    .catch((error: unknown) => {
+      // Broker overload certifies that no mutation was accepted, so optional
+      // progress cannot block an otherwise valid update.
+      if (
+        optionalBookkeeping &&
+        isSqliteWorkerError(error, "overloaded") &&
+        !hasSqliteWorkerOutcomeUnknown(error)
+      ) {
+        skipped = true;
+        return undefined;
+      }
+      throw error;
+    });
   captured.retainSettlement?.(completion.then(() => undefined));
   const reply = await completion;
   assertCurrent();
+  if (skipped) {
+    // Warn only after the authority check: a revoked caller must not be told
+    // that the update will continue.
+    console.warn(
+      "[update] Update history admission is saturated; bookkeeping was not recorded. The update will continue.",
+    );
+    return undefined;
+  }
   if (!reply) {
     throw new Error("Update history disappeared before recording its outcome");
   }
@@ -109,6 +134,7 @@ export function recordUpdateRunStepAsync(
     runId,
     (input) => ({ type: "updateRuns.recordStep", input: { ...input, step } }),
     options,
+    !isRequiredUpdateRunStep(step),
   );
 }
 
