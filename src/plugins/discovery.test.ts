@@ -1295,5 +1295,42 @@ describe("discoverOpenClawPlugins", () => {
     expect(bundledOnly.candidates.map((candidate) => candidate.idHint)).toEqual(["bundled-plugin"]);
     expect(bundledOnly.diagnostics).toEqual([]);
   });
+
+  it("does not relabel the global extensions dir as workspace when the workspace is the home dir", () => {
+    const homeDir = path.join(testRoot, "home");
+    const configDir = path.join(homeDir, ".openclaw");
+    const globalRoot = path.join(configDir, "extensions");
+    const codexDir = path.join(globalRoot, "codex");
+    createPlugin(codexDir, "@openclaw/codex", "codex");
+    const installRecords: Record<string, PluginInstallRecord> = {
+      codex: {
+        source: "clawhub",
+        spec: "clawhub:@openclaw/codex",
+        installPath: codexDir,
+        clawhubUrl: "https://clawhub.ai",
+        clawhubChannel: "official",
+      },
+    };
+    // `openclaw doctor` from $HOME resolves the workspace plugin root to
+    // $HOME/.openclaw/extensions, which is also the global install root.
+    const env = discoveryEnv(testRoot, {
+      OPENCLAW_STATE_DIR: configDir,
+      HOME: homeDir,
+      USERPROFILE: homeDir,
+    });
+    const discovery = discoverOpenClawPlugins({ workspaceDir: homeDir, installRecords, env });
+    const codexCandidates = discovery.candidates.filter(
+      (candidate) => candidate.idHint === "codex",
+    );
+    expect(codexCandidates).toHaveLength(1);
+    expectFields(codexCandidates[0], { origin: "global", installOwner: "codex" });
+
+    const registry = loadPluginManifestRegistryCore({ discovery, installRecords, env });
+    expect(registry.plugins.find((plugin) => plugin.id === "codex")).toMatchObject({
+      origin: "global",
+      trustedOfficialInstall: true,
+      trust: { reason: "trusted-official" },
+    });
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
