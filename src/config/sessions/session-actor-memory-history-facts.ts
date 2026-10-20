@@ -390,6 +390,7 @@ export function readSessionActorMemoryHistoryFacts(
               maxChars,
             ),
             hasOlderEvents: selected.length < navigation.visibleHistory.length,
+            scannedEvents: selected.length,
           };
         }),
       };

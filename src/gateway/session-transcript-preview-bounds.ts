@@ -12,12 +12,15 @@ export type SessionPreviewReadWindow = {
 export type SessionPreviewPage = {
   items: SessionPreviewItem[];
   hasOlderEvents: boolean;
+  /** Events the reader selected; a page below its window cap was byte-limited. */
+  scannedEvents: number;
 };
 
 /**
  * Tail windows widen only after a smaller page cannot satisfy the requested items.
  * The final window is the explicit scan ceiling, so a tool-only or suppressed tail
  * longer than the ordinary recovery page can still recover without a full read.
+ * A byte-capped page only advances when the next window raises the byte budget.
  */
 export function sessionPreviewReadWindows(maxItems: number): readonly SessionPreviewReadWindow[] {
   const requestedItems = Math.max(1, Math.ceil(maxItems));
@@ -41,16 +44,36 @@ export function sessionPreviewReadWindows(maxItems: number): readonly SessionPre
   return windows;
 }
 
+/** A byte-capped page cannot advance under a window with no larger byte budget. */
+function previewCanWiden(
+  page: SessionPreviewPage,
+  window: SessionPreviewReadWindow,
+  next: SessionPreviewReadWindow | undefined,
+): boolean {
+  if (!next) {
+    return false;
+  }
+  if (page.scannedEvents < window.maxEvents && next.maxBytes <= window.maxBytes) {
+    return false;
+  }
+  return true;
+}
+
 /** Synchronous display and in-memory readers share the same bounded widening policy. */
 export function readBoundedSessionPreviewItems(
   maxItems: number,
   readPage: (window: SessionPreviewReadWindow) => SessionPreviewPage,
 ): SessionPreviewItem[] {
   let items: SessionPreviewItem[] = [];
-  for (const window of sessionPreviewReadWindows(maxItems)) {
+  const windows = sessionPreviewReadWindows(maxItems);
+  for (let index = 0; index < windows.length; index += 1) {
+    const window = windows[index]!;
     const page = readPage(window);
     items = page.items;
     if (items.length >= maxItems || !page.hasOlderEvents) {
+      break;
+    }
+    if (!previewCanWiden(page, window, windows[index + 1])) {
       break;
     }
   }
@@ -63,10 +86,15 @@ export async function readBoundedSessionPreviewItemsAsync(
   readPage: (window: SessionPreviewReadWindow) => Promise<SessionPreviewPage>,
 ): Promise<SessionPreviewItem[]> {
   let items: SessionPreviewItem[] = [];
-  for (const window of sessionPreviewReadWindows(maxItems)) {
+  const windows = sessionPreviewReadWindows(maxItems);
+  for (let index = 0; index < windows.length; index += 1) {
+    const window = windows[index]!;
     const page = await readPage(window);
     items = page.items;
     if (items.length >= maxItems || !page.hasOlderEvents) {
+      break;
+    }
+    if (!previewCanWiden(page, window, windows[index + 1])) {
       break;
     }
   }

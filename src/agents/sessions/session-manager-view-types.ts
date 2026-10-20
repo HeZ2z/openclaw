@@ -24,3 +24,5 @@ export type SessionManagerBoundedContext = SessionManagerBoundedView &
     SessionTranscriptBoundedActiveContext,
     "persistedSuffixStartSeq" | "boundaryCount" | "transcriptMutationAt"
   > & { limits: SessionManagerBoundedContextLimits };
+
+export type SessionManagerBoundedTruncation = { loadedEvents: number };

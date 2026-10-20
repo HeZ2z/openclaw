@@ -72,6 +72,7 @@ import type {
 import type {
   SessionManagerBoundedContext,
   SessionManagerBoundedContextLimits,
+  SessionManagerBoundedTruncation,
   SessionManagerPersistenceTarget,
   SessionManagerTranscriptCohort,
 } from "./session-manager-view-types.js";
@@ -521,14 +522,17 @@ export class SessionManager extends SessionManagerBranching {
   /** @deprecated Await openBoundedAsync. Supported through 2026-12-31. Removal in the first January 2027 stable release. */
   static openBounded(
     target: SessionTranscriptRuntimeTarget,
-    options: SessionManagerBoundedContextLimits & { cwd?: string; onTruncated?: () => void },
+    options: SessionManagerBoundedContextLimits & {
+      cwd?: string;
+      onTruncated?: (truncation: SessionManagerBoundedTruncation) => void;
+    },
   ): SessionManager {
     prepareSessionManagerSync("openBounded", target);
     const { cwd, onTruncated, ...limits } = options;
     const capturedTarget = captureSessionTranscriptTargetBinding(target);
     const context = readSessionTranscriptBoundedActiveContextCore(capturedTarget, limits);
     if (context.truncated) {
-      onTruncated?.();
+      onTruncated?.({ loadedEvents: context.events.length });
     }
     // SAFETY: The accessor returns the same persisted transcript event union consumed by open().
     const entries = context.events as FileEntry[];
@@ -578,7 +582,7 @@ export class SessionManager extends SessionManagerBranching {
     target: SessionTranscriptRuntimeTarget,
     options: SessionManagerBoundedContextLimits & {
       cwd?: string;
-      onTruncated?: () => void;
+      onTruncated?: (truncation: SessionManagerBoundedTruncation) => void;
       signal?: AbortSignal;
     },
   ): Promise<SessionManager> {

@@ -20,6 +20,7 @@ import { prepareSessionManagerMemoryRead } from "./session-manager-memory-read.j
 import type {
   PreparedSessionTranscriptReload,
   SessionManagerBoundedContextLimits,
+  SessionManagerBoundedTruncation,
   SessionManagerPersistenceTarget,
   SessionManagerTranscriptCohort,
 } from "./session-manager-view-types.js";
@@ -29,7 +30,7 @@ export async function openSessionManagerBoundedView<T extends object>(
   target: SessionTranscriptRuntimeTarget,
   options: SessionManagerBoundedContextLimits & {
     cwd?: string;
-    onTruncated?: () => void;
+    onTruncated?: (truncation: SessionManagerBoundedTruncation) => void;
     signal?: AbortSignal;
   },
   create: (
@@ -63,7 +64,7 @@ export async function openSessionManagerBoundedView<T extends object>(
     }
     const context = prepared.snapshot;
     if (context.truncated) {
-      onTruncated?.();
+      onTruncated?.({ loadedEvents: context.events.length });
     }
     assertCurrent();
     const header = findSessionTranscriptHeader(context.events);

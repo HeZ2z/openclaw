@@ -100,11 +100,13 @@ function readSessionModelPreviewItems(
 ): Promise<SessionPreviewItem[]> {
   return readBoundedSessionPreviewItemsAsync(maxItems, async ({ maxEvents, maxBytes }) => {
     let truncated = false;
+    let loadedEvents = maxEvents;
     const manager = await SessionManager.openBoundedAsync(target, {
       maxEvents,
       maxBytes,
-      onTruncated: () => {
+      onTruncated: ({ loadedEvents: truncatedEvents }) => {
         truncated = true;
+        loadedEvents = truncatedEvents;
       },
     });
     return {
@@ -115,6 +117,8 @@ function readSessionModelPreviewItems(
         "model-context",
       ),
       hasOlderEvents: truncated,
+      // A truncated page below the event cap was byte-limited under this window's budget.
+      scannedEvents: loadedEvents,
     };
   });
 }

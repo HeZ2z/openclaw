@@ -32,6 +32,7 @@ function readSessionDisplayPreviewItems(
         maxChars,
       ),
       hasOlderEvents: page.totalMessages > page.events.length,
+      scannedEvents: page.events.length,
     };
   });
 }

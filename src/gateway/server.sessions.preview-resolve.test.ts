@@ -467,12 +467,13 @@ test("session preview reader returns short visible history behind a long hidden 
 
 test("session preview owner stops at its explicit tail scan ceiling", async () => {
   const sessionId = "sess-preview-scan-ceiling";
+  // The hidden tail exceeds the 2,048-event ceiling, so the visible rows stay unreachable.
   const scope = await seedPreviewTail(sessionId, [
     ...Array.from({ length: 64 }, (_, index) => ({
       role: "assistant",
       content: `visible ${String(index)}`,
     })),
-    ...Array.from({ length: 1500 }, (_, index) => ({
+    ...Array.from({ length: 2100 }, (_, index) => ({
       role: "toolResult",
       content: `tool ${String(index)}`,
     })),
@@ -480,8 +481,6 @@ test("session preview owner stops at its explicit tail scan ceiling", async () =
   const { path: databasePath } = resolveUnsuffixedSqliteTargetFromSessionStorePath(scope.storePath);
   const { readSessionPreviewItemsReadOnly } =
     await import("./session-transcript-preview-reader.js");
-  const { SESSION_PREVIEW_SCAN_MAX_EVENTS } =
-    await import("./session-transcript-preview-bounds.js");
   const historyQuery = await import("../config/sessions/session-accessor.sqlite-history-query.js");
   const readPage = historyQuery.readRecentSessionTranscriptHistoryEventsFromProjection;
   const calls: Array<{ maxMessages: number; events: number }> = [];
@@ -500,16 +499,10 @@ test("session preview owner stops at its explicit tail scan ceiling", async () =
       maxItems: 12,
       maxChars: 120,
     });
-    expect(items.map((item) => item.text)).toEqual(
-      Array.from({ length: 12 }, (_, index) => `visible ${String(52 + index)}`),
-    );
-    expect(calls.length).toBeLessThanOrEqual(4);
-    expect(calls.every((call) => call.maxMessages <= SESSION_PREVIEW_SCAN_MAX_EVENTS)).toBe(true);
-    expect(calls.at(-1)?.maxMessages).toBe(SESSION_PREVIEW_SCAN_MAX_EVENTS);
-    // Widened windows overlap, but the whole read stays within two scan ceilings.
-    expect(calls.reduce((total, call) => total + call.events, 0)).toBeLessThanOrEqual(
-      SESSION_PREVIEW_SCAN_MAX_EVENTS * 2,
-    );
+    // No preview result field reports scan exhaustion yet; this residual gap is explicit.
+    expect(items).toEqual([]);
+    expect(calls.map((call) => call.maxMessages)).toEqual([64, 1024, 2048]);
+    expect(calls.reduce((total, call) => total + call.events, 0)).toBeLessThanOrEqual(2048 * 2);
   } finally {
     spy.mockRestore();
   }
