@@ -40,10 +40,14 @@ export type BackupCoreDatabase = Readonly<
 
 /** Ephemeral coverage of a captured canonical image; never part of the archive manifest. */
 export type BackupSqliteSnapshotFact = Readonly<
-  { sourcePath: string; dev: bigint; ino: bigint } & (
-    | { role: "global" }
-    | { role: "agent"; agentId: string }
-  )
+  {
+    sourcePath: string;
+    dev: bigint;
+    ino: bigint;
+    /** Verified full image when the caller captured one (updater snapshots). */
+    snapshotPath?: string;
+    sha256?: string;
+  } & ({ role: "global" } | { role: "agent"; agentId: string })
 >;
 
 type BackupResourcePolicy = Readonly<{

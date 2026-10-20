@@ -37,10 +37,15 @@ import {
   type ScopedMigrationInspection,
 } from "../infra/sqlite-migration-scoped-snapshot.js";
 import { resolveSqliteInspectionSignal } from "../infra/sqlite-readonly-worker.js";
+import { hashPublishedFileSync } from "../infra/sqlite-snapshot-file.js";
 import type { PublishedSqliteFileGuard } from "../infra/sqlite-snapshot.types.js";
 import type { AgentDatabaseMigrationTarget } from "../infra/state-migrations.media-persistence-targets.js";
 import type { MigrationMessages } from "../infra/state-migrations.types.js";
-import { hasUpdateDoctorMigrationCapture } from "../infra/update-doctor-migration-attribution.js";
+import {
+  getDoctorMigrationFullBackup,
+  hasUpdateDoctorMigrationCapture,
+  registerDoctorMigrationFullBackup,
+} from "../infra/update-doctor-migration-attribution.js";
 import { DoctorMaintenanceRefusalError } from "../infra/update-doctor-result.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { agentEngineInput } from "../state/openclaw-agent-db-engine.js";
@@ -88,12 +93,33 @@ export function captureFreshDoctorMigrationTables(
   };
   assertCurrent();
   const backupId = randomUUID();
-  const backup = createScopedMigrationSnapshotSync(db, {
-    sourcePath: options.path,
-    targetPath: `${options.path}.pre-startup-migration-${backupId}.scoped.bak`,
-    tables: options.tables,
-    assertCurrent,
-  });
+  let backup: { path: string; generation: string };
+  try {
+    backup = createScopedMigrationSnapshotSync(db, {
+      sourcePath: options.path,
+      targetPath: `${options.path}.pre-startup-migration-${backupId}.scoped.bak`,
+      tables: options.tables,
+      assertCurrent,
+    });
+  } catch (error) {
+    if (!(error instanceof ScopedMigrationSnapshotUnsupportedError)) {
+      throw error;
+    }
+    // This runtime cannot recreate a declared statistics table. The general Doctor
+    // backup owner already admitted a verified full image for this source generation;
+    // reuse it rather than blocking credential retirement on the narrower scope.
+    const full = getDoctorMigrationFullBackup(options.path);
+    if (!full) {
+      throw error;
+    }
+    const generation =
+      full.generation ??
+      hashPublishedFileSync(full.path, lstatSync(full.path, { bigint: true })).sha256;
+    return {
+      capture: { path: options.path, generation, assertCurrent },
+      backupPath: full.path,
+    };
+  }
   recordDoctorMigrationBackups(
     options.env,
     backupId,
@@ -367,6 +393,24 @@ export async function backupDoctorSqliteDatabases(params: {
       );
     })
   ) {
+    // Updater snapshots are exact full images. Register them so a fresh credential
+    // capture can retain custody instead of failing on an unsupported scoped restore.
+    for (const sourcePath of sources) {
+      const { dev, ino } = statSync(sourcePath, { bigint: true });
+      const snapshot = params.verifiedSnapshots?.find(
+        (entry) =>
+          entry.dev === dev &&
+          entry.ino === ino &&
+          entry.snapshotPath !== undefined &&
+          entry.snapshotPath.length > 0,
+      );
+      if (snapshot?.snapshotPath) {
+        registerDoctorMigrationFullBackup(sourcePath, {
+          path: snapshot.snapshotPath,
+          ...(snapshot.sha256 ? { generation: snapshot.sha256 } : {}),
+        });
+      }
+    }
     return { changes: [], warnings: [] };
   }
   const inventory = [
@@ -556,6 +600,10 @@ export async function backupDoctorSqliteDatabases(params: {
           { cause },
         );
       }
+      if (targetPath !== scopedTargetFor(sourcePath)) {
+        // A retry keeps the original full image; fresh credential capture may reuse it.
+        registerDoctorMigrationFullBackup(sourcePath, { path: targetPath });
+      }
       changes.push(`Reused pre-migration SQLite backup: ${targetPath}`);
       continue;
     }
@@ -566,25 +614,33 @@ export async function backupDoctorSqliteDatabases(params: {
       );
     }
     const inspection = inspections.get(sourcePath);
-    const backup = inspection
-      ? await createScopedMigrationSnapshot({
-          sourcePath,
-          targetPath,
-          tables: inspection.tables.map((table) => table.name),
-          inspection,
-          beforePublish: assertCapture,
-          afterPublish,
-        })
-      : await createVerifiedSqliteSnapshot({
-          sourcePath,
-          targetPath,
-          preserveRowIds: true,
-          integrity: params.integrityChecks?.get(sourcePath),
-          transform: sanitizeOpenClawStateLeaseRows,
-          beforePublish: assertCapture,
-          afterPublish,
-          validate: params.repair?.validate,
-        });
+    let backup: { path: string };
+    if (inspection) {
+      backup = await createScopedMigrationSnapshot({
+        sourcePath,
+        targetPath,
+        tables: inspection.tables.map((table) => table.name),
+        inspection,
+        beforePublish: assertCapture,
+        afterPublish,
+      });
+    } else {
+      const full = await createVerifiedSqliteSnapshot({
+        sourcePath,
+        targetPath,
+        preserveRowIds: true,
+        integrity: params.integrityChecks?.get(sourcePath),
+        transform: sanitizeOpenClawStateLeaseRows,
+        beforePublish: assertCapture,
+        afterPublish,
+        validate: params.repair?.validate,
+      });
+      registerDoctorMigrationFullBackup(sourcePath, {
+        path: full.path,
+        generation: full.sha256,
+      });
+      backup = full;
+    }
     assertCapture();
     changes.push(`Saved pre-migration SQLite backup: ${backup.path}`);
   }

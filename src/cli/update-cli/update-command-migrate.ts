@@ -222,7 +222,17 @@ export async function updateMigrateCommand(
           if (!identity) {
             return [];
           }
-          return [{ sourcePath: owner.path, ...identity, ...owner }];
+          const image = backup.databases.find(
+            (entry) => path.resolve(entry.path) === path.resolve(owner.path),
+          );
+          return [
+            {
+              sourcePath: owner.path,
+              ...identity,
+              ...owner,
+              ...(image ? { snapshotPath: image.snapshotPath, sha256: image.sha256 } : {}),
+            },
+          ];
         },
       );
       return { receipt: capturedReceipt, verifiedSnapshots: snapshots };

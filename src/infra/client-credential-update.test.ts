@@ -1,4 +1,5 @@
 import "../test-utils/prepare-compiled-subprocesses.js";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getEnvironmentData } from "node:worker_threads";
@@ -34,6 +35,10 @@ import { resolveClientCredentialStorePath } from "./client-credential-paths.js";
 import { readClientCredentialReceipt } from "./client-credential-readiness.js";
 import { CLIENT_CREDENTIAL_SCHEMA_SQL } from "./client-credential-schema.js";
 import {
+  installLegacyStat4,
+  stat4CompiledIn,
+} from "./client-credential-stat4.test-support.js";
+import {
   openClientCredentialCustody,
   runClientCredentialOperation,
 } from "./client-credential-store.js";
@@ -48,6 +53,7 @@ import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { isPostgresSqlConnection, type EngineConnection } from "./sql-connection.js";
 import { inspectScopedMigrationSnapshot } from "./sqlite-migration-scoped-snapshot.js";
+import { createVerifiedSqliteSnapshot } from "./sqlite-snapshot.js";
 import { autoMigrateLegacyState } from "./state-migrations.doctor.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 import type { UpdateRunResult } from "./update-runner-types.js";
@@ -722,6 +728,94 @@ describe("client credential public update custody", () => {
       restored.prepare("SELECT wr FROM pragma_table_list WHERE name='session_state_heads'").get(),
     ).toEqual({ wr: 1 });
   });
+
+  it.skipIf(stat4CompiledIn)(
+    "falls back to the active full migration backup when legacy STAT4 cannot be recreated",
+    async () => {
+      const f = await fixture("sqlite", false, 28);
+      installLegacyStat4(f.pathname);
+      await migrate(f);
+      const backups = fs
+        .readdirSync(path.dirname(f.pathname))
+        .filter((name) => name.startsWith("openclaw.sqlite.pre-startup-migration-"));
+      expect(backups).toHaveLength(1);
+      expect(backups[0]).not.toMatch(/\.scoped\.bak$/u);
+      const backupPath = path.join(path.dirname(f.pathname), backups[0]!);
+      {
+        using saved = openNodeSqliteDatabase(backupPath, { readOnly: true });
+        expect(saved.prepare("PRAGMA user_version").get()).toEqual({ user_version: 28 });
+        expect(saved.prepare("SELECT token FROM device_auth_tokens").get()).toEqual({
+          token: "synthetic-original-token",
+        });
+        expect(saved.prepare("SELECT count(*) AS rows FROM sqlite_stat4").get()).toEqual({
+          rows: 0,
+        });
+      }
+      using local = openClientCredentialCustody(f.env, { migration: true })!;
+      expect(readClientCredentialReceipt(local.database)?.receipt.source?.generation).toBe(
+        createHash("sha256").update(fs.readFileSync(backupPath)).digest("hex"),
+      );
+    },
+  );
+
+  it.skipIf(stat4CompiledIn)(
+    "reuses the updater's verified full image when legacy STAT4 cannot be recreated",
+    async () => {
+      const f = await fixture("sqlite", false, 28);
+      installLegacyStat4(f.pathname);
+      const snapshotPath = `${f.pathname}.updater-verified.bak`;
+      const snapshot = await createVerifiedSqliteSnapshot({
+        sourcePath: f.pathname,
+        targetPath: snapshotPath,
+        preserveRowIds: true,
+      });
+      const sourceIdentity = fs.statSync(f.pathname, { bigint: true });
+      const maintenance = await beginDoctorMaintenance({
+        root: null,
+        options: { repair: true, nonInteractive: true },
+        runtime: { log() {}, error() {}, exit() {} },
+      });
+      expect(maintenance).toBeDefined();
+      try {
+        const outcome = await maintenance!.run(() =>
+          prepareDoctorDatabaseMigrations({
+            env: f.env,
+            databasePaths: [f.pathname],
+            pendingDatabasePaths: [f.pathname],
+            pendingMigrations: [
+              {
+                kind: "state",
+                path: f.pathname,
+                foundVersion: 28,
+                supportedVersion: OPENCLAW_STATE_SCHEMA_VERSION,
+              },
+            ],
+            verifiedSnapshots: [
+              {
+                sourcePath: f.pathname,
+                dev: sourceIdentity.dev,
+                ino: sourceIdentity.ino,
+                role: "global",
+                snapshotPath,
+                sha256: snapshot.sha256,
+              },
+            ],
+          }),
+        );
+        expect(outcome.warnings).toEqual([]);
+        await maintenance!.releaseState();
+      } finally {
+        await maintenance!.release();
+        await closeOpenClawStateDatabaseAsync();
+      }
+      assertMigratedCredentials(f);
+      expect(fs.existsSync(snapshotPath)).toBe(true);
+      using local = openClientCredentialCustody(f.env, { migration: true })!;
+      expect(readClientCredentialReceipt(local.database)?.receipt.source?.generation).toBe(
+        snapshot.sha256,
+      );
+    },
+  );
 
   it("preserves native bootstrap on updater refusal and migrates it through standalone Doctor", async () => {
     const f = await fixture("sqlite", true);

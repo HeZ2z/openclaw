@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { lstatSync, realpathSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { withArtifactPreservingStateReads } from "../state/artifact-preserving-state-reads.js";
@@ -28,11 +29,13 @@ type DoctorMigrationBackup = (
   db: DatabaseSync,
   options: { path: string; env: NodeJS.ProcessEnv; tables: readonly string[] },
 ) => { capture: MigrationSource; backupPath: string };
+type DoctorMigrationFullBackup = { path: string; generation?: string };
 const captures = new AsyncLocalStorage<{
   capture?: UpdateDoctorMigrationCapture;
   source?: MigrationSource;
   assertMigrationCurrent?: () => void;
   backup?: DoctorMigrationBackup;
+  fullBackups?: Map<string, DoctorMigrationFullBackup>;
 }>();
 
 /** Doctor's existing maintenance interval owns the publication receipt. */
@@ -53,6 +56,29 @@ export function runWithDoctorMigrationBackup<T>(
   operation: () => T,
 ): T {
   return captures.run({ ...captures.getStore(), backup }, operation);
+}
+
+/**
+ * The full-backup owner records its verified image for the current migration run.
+ * Fresh table capture may reuse it when this SQLite runtime cannot restore a
+ * declared statistics table instead of entering a second scoped copy.
+ */
+export function registerDoctorMigrationFullBackup(
+  sourcePath: string,
+  backup: DoctorMigrationFullBackup,
+): void {
+  const context = captures.getStore();
+  if (!context || !lstatSync(backup.path, { throwIfNoEntry: false })?.isFile()) {
+    return;
+  }
+  const key = realpathSync.native(sourcePath);
+  (context.fullBackups ??= new Map()).set(key, backup);
+}
+
+export function getDoctorMigrationFullBackup(
+  sourcePath: string,
+): DoctorMigrationFullBackup | undefined {
+  return captures.getStore()?.fullBackups?.get(realpathSync.native(sourcePath));
 }
 
 export function getDoctorMigrationBackup(
