@@ -10,7 +10,10 @@ import type { createSessionActorMemoryEvents } from "./session-actor-memory-even
 import { createSessionActorMemoryPending } from "./session-actor-memory-pending.js";
 import type { SessionActorMemoryState } from "./session-actor-memory-state.js";
 import type { SessionActorPhaseBackend } from "./session-actor-phase.js";
-import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
+import {
+  SqliteTranscriptMutationConflictError,
+  TranscriptIdempotencyConflictError,
+} from "./session-mutation-conflict-error.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 import { parseSessionPendingInputMessage } from "./session-pending-input-value.js";
 import type {
@@ -180,9 +183,7 @@ export function createSessionActorMemoryMessages(
           !messagesMatchForIdempotentReplay(replay.message, acceptedMessage ?? input.message)) ||
         (usesCustody && (relocating ? input.eventId : facts?.transcriptInputId) !== replay.id)
       ) {
-        throw new Error(
-          `Transcript idempotency key "${key ?? input.eventId}" conflicts with the admitted message.`,
-        );
+        throw new TranscriptIdempotencyConflictError(key ?? input.eventId ?? replay.id);
       }
       const anchor = state.hot.transcript.anchors.find((value) => value.entryId === replay.id);
       if (usesCustody && !anchor) {

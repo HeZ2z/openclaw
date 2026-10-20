@@ -18,6 +18,7 @@ import {
 } from "../infra/update-run-write.async.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { sendGatewayLifecycleNotice } from "./server-restart-sentinel-notice.js";
+import { deliverUpdateRunFinishedNotice } from "./update-run-finished-notice.js";
 import {
   authorizeUpdateRunNoticeTarget,
   recordUpdateRunNoticeSkipped,
@@ -85,6 +86,22 @@ export async function createUpdateRunNotifier(
           },
           context,
         );
+      } else if (kind === "finished") {
+        const internal = currentTarget.session;
+        const outcome = await deliverUpdateRunFinishedNotice({
+          runId: run.runId,
+          agentId: internal.agentId,
+          sessionKey: internal.canonicalKey,
+          expectedSessionId: internal.entry.sessionId,
+          expectedLifecycleRevision: internal.entry.lifecycleRevision ?? null,
+          storePath: internal.storePath,
+          fallbackMessage: message,
+          ...(env ? { env } : {}),
+        });
+        delivered = outcome.delivered;
+        if (!outcome.delivered && !outcome.skipped && outcome.reason) {
+          log.warn(`update run notice append failed: ${outcome.reason}`);
+        }
       } else {
         const internal = currentTarget.session;
         const notice = await appendAssistantMessageToSessionTranscript({
@@ -101,7 +118,9 @@ export async function createUpdateRunNotifier(
           log.warn(`update run notice append failed: ${notice.reason}`);
         }
       }
-      if (delivered && kind === "finished") {
+      // The finished owner records its own transcript receipt; routed notices
+      // record here after the durable queue accepted them.
+      if (delivered && kind === "finished" && currentTarget.kind === "route") {
         await recordUpdateRunVerification(run.runId, { noticeDelivered: true }, { env });
       }
       const custody =

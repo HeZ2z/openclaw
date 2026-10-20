@@ -16,6 +16,17 @@ const SKIPPED_UPDATE_RUN_HEADLINES = new Map<string | null, string>([
   ["managed-service-handoff-already-running", "⬆️ OpenClaw is already updating."],
 ]);
 
+const DEFAULT_UPDATE_RUN_SUMMARY_NEXT_STEP =
+  "For details, open Settings → Updates in the Control UI or run `openclaw update status` in your terminal.";
+
+const TERMINAL_UPDATE_RUN_HEADLINES = new Set<string>([
+  ...Array.from(UPDATE_RUN_HEADLINES.entries())
+    .filter(([status]) => status !== "running")
+    .map(([, headline]) => headline),
+  ...SKIPPED_UPDATE_RUN_HEADLINES.values(),
+  "ℹ️ OpenClaw wasn't updated.",
+]);
+
 /** Chat shows the outcome; the update views keep diagnostics and recovery instructions. */
 export function renderUpdateRunSummary(
   run: Pick<UpdateRunRecord, "status" | "reason">,
@@ -27,8 +38,21 @@ export function renderUpdateRunSummary(
       : (SKIPPED_UPDATE_RUN_HEADLINES.get(run.reason) ?? "ℹ️ OpenClaw wasn't updated.");
   const nextStep = options.manualCommand
     ? `Open Settings → Updates in the Control UI for details. To continue, run \`${options.manualCommand}\` in your terminal.`
-    : "For details, open Settings → Updates in the Control UI or run `openclaw update status` in your terminal.";
+    : DEFAULT_UPDATE_RUN_SUMMARY_NEXT_STEP;
   return `${headline}\n${nextStep}`;
+}
+
+/**
+ * Structural allowlist for a terminal completion summary persisted in chat.
+ * Only this owner's durable renderer may reconcile an admitted transcript message.
+ */
+export function isUpdateRunTerminalNoticeText(text: string): boolean {
+  const [headline, ...details] = text.split("\n");
+  return (
+    headline !== undefined &&
+    TERMINAL_UPDATE_RUN_HEADLINES.has(headline) &&
+    details.join("\n") === DEFAULT_UPDATE_RUN_SUMMARY_NEXT_STEP
+  );
 }
 
 /** Only the current milestone may produce a conversation notice. */

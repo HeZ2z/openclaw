@@ -33,7 +33,10 @@ import {
   appendTranscriptEventInTransaction,
   sanitizeTranscriptMessageForStorage,
 } from "./session-accessor.sqlite-transcript-store.js";
-import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
+import {
+  SqliteTranscriptMutationConflictError,
+  TranscriptIdempotencyConflictError,
+} from "./session-mutation-conflict-error.js";
 import {
   readTranscriptAppendPostimage,
   retainTranscriptAppendPostimage,
@@ -48,13 +51,6 @@ type TranscriptMessageCommit<TMessage> = {
   result: TranscriptMessageAppendResult<TMessage>;
   visibleTailEntryId?: string;
 };
-
-class TranscriptTurnAdmissionConflictError extends Error {
-  constructor(idempotencyKey: string) {
-    super(`Transcript idempotency key "${idempotencyKey}" conflicts with the admitted message.`);
-    this.name = "TranscriptTurnAdmissionConflictError";
-  }
-}
 
 type TranscriptMessageEnvelope = {
   type: "message";
@@ -132,7 +128,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
         found.messageId !== pending.inputId ||
         !messagesMatchForIdempotentReplay(found.message, pending.message)
       ) {
-        throw new TranscriptTurnAdmissionConflictError(pending.inputId);
+        throw new TranscriptIdempotencyConflictError(pending.inputId);
       }
       // A consumed receipt permits terminal mirroring only while its exact user
       // remains on the active path; it cannot revive a replaced transcript branch.
@@ -174,7 +170,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
           pending?.message ?? serializeForStorage(options.message),
         )
       ) {
-        throw new TranscriptTurnAdmissionConflictError(idempotencyKey);
+        throw new TranscriptIdempotencyConflictError(idempotencyKey);
       }
       return existingAppendResult(existing);
     }
@@ -261,7 +257,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
         !options.prepareMessageAfterIdempotencyCheck &&
         !messagesMatchForIdempotentReplay(existing.message, finalMessage)
       ) {
-        throw new TranscriptTurnAdmissionConflictError(idempotencyKey ?? `event:${messageId}`);
+        throw new TranscriptIdempotencyConflictError(idempotencyKey ?? `event:${messageId}`);
       }
       return existingAppendResult(existing);
     }

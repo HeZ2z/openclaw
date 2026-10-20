@@ -75,6 +75,7 @@ import { recordLatestUpdateRestartSentinel } from "./server-update-sentinel.js";
 import { findCanonicalStoreMatch } from "./session-utils-store-selection.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
 import { runStartupTasks, type StartupTask } from "./startup-tasks.js";
+import { deliverUpdateRunFinishedNotice } from "./update-run-finished-notice.js";
 import {
   recordUpdateRunNoticeSkipped,
   resolveUpdateRunNoticeTarget,
@@ -510,28 +511,45 @@ async function loadRestartSentinelStartupTask(params: {
       internalNoticeWritten = true;
     } else if (sessionKey && target.kind === "internal") {
       const { agentId, entry: internalEntry, storePath } = target.session;
-      const notice = await appendAssistantMessageToSessionTranscript({
-        agentId,
-        sessionKey: canonicalKey,
-        expectedSessionId: internalEntry.sessionId,
-        expectedLifecycleRevision: internalEntry.lifecycleRevision ?? null,
-        storePath,
-        text: noticeMessage,
-        idempotencyKey: updateRunId
-          ? `update-run-finished:${updateRunId}`
-          : `restart-sentinel-notice:${canonicalKey}:${sentinelRevision}`,
-      }).catch((error: unknown) => ({ ok: false as const, reason: formatErrorMessage(error) }));
-      internalNoticeWritten = notice.ok;
-      if (notice.ok && updateRunId) {
-        await recordUpdateRunVerification(updateRunId, { noticeDelivered: true }, { env });
-      }
-      if (!notice.ok) {
-        log.warn(
-          `${summary}: internal restart notice append failed; falling back to wake: ${notice.reason}`,
-          {
-            sessionKey: canonicalKey,
-          },
-        );
+      if (updateRunId) {
+        const outcome = await deliverUpdateRunFinishedNotice({
+          runId: updateRunId,
+          agentId,
+          sessionKey: canonicalKey,
+          expectedSessionId: internalEntry.sessionId,
+          expectedLifecycleRevision: internalEntry.lifecycleRevision ?? null,
+          storePath,
+          fallbackMessage: noticeMessage,
+          env,
+        });
+        internalNoticeWritten = outcome.delivered;
+        if (!outcome.delivered && !outcome.skipped && outcome.reason) {
+          log.warn(
+            `${summary}: internal restart notice append failed; falling back to wake: ${outcome.reason}`,
+            {
+              sessionKey: canonicalKey,
+            },
+          );
+        }
+      } else {
+        const notice = await appendAssistantMessageToSessionTranscript({
+          agentId,
+          sessionKey: canonicalKey,
+          expectedSessionId: internalEntry.sessionId,
+          expectedLifecycleRevision: internalEntry.lifecycleRevision ?? null,
+          storePath,
+          text: noticeMessage,
+          idempotencyKey: `restart-sentinel-notice:${canonicalKey}:${sentinelRevision}`,
+        }).catch((error: unknown) => ({ ok: false as const, reason: formatErrorMessage(error) }));
+        internalNoticeWritten = notice.ok;
+        if (!notice.ok) {
+          log.warn(
+            `${summary}: internal restart notice append failed; falling back to wake: ${notice.reason}`,
+            {
+              sessionKey: canonicalKey,
+            },
+          );
+        }
       }
     }
 

@@ -29,3 +29,20 @@ export class SessionEntryLifecycleUpsertConflictError extends Error {
     this.name = "SessionEntryLifecycleUpsertConflictError";
   }
 }
+
+/** A scoped idempotency key already owns different transcript content. */
+export class TranscriptIdempotencyConflictError extends Error {
+  constructor(readonly idempotencyKey: string) {
+    super(`Transcript idempotency key "${idempotencyKey}" conflicts with the admitted message.`);
+    this.name = "TranscriptIdempotencyConflictError";
+  }
+}
+
+/** Producers that own an idempotency key may reconcile their own admitted message. */
+export function isTranscriptIdempotencyConflict(error: unknown, idempotencyKey?: string): boolean {
+  return collectErrorGraphCandidates(error, readErrorCauses).some(
+    (candidate) =>
+      candidate instanceof TranscriptIdempotencyConflictError &&
+      (idempotencyKey === undefined || candidate.idempotencyKey === idempotencyKey),
+  );
+}
