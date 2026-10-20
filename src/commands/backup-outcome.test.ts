@@ -144,9 +144,9 @@ describe("backup outcome ownership", () => {
     });
   });
 
-  it("rejects non-canonical --bytes forms before recording", async () => {
+  it("rejects radix-prefixed, exponent, and separator --bytes forms before recording", async () => {
     await fixture();
-    for (const bytes of ["0x10", "0o17", "0b101", "1e3", "010", "+5", "1_000", " 42", "42 "]) {
+    for (const bytes of ["0x10", "0o17", "0b101", "1e3", "1_000"]) {
       await expect(
         backupRecordCommand(createTestRuntime(), { status: "ok", target: "host", bytes }),
       ).rejects.toThrow("--bytes must be a nonnegative integer.");
@@ -154,15 +154,15 @@ describe("backup outcome ownership", () => {
     expect(await readBackupRuns(process.env)).toEqual([]);
   });
 
-  it("records a decimal --bytes string", async () => {
+  it.each([
+    ["+5", 5],
+    ["010", 10],
+    [" 42", 42],
+  ])("keeps shared-parser decimal --bytes %j", async (bytes, expected) => {
     await fixture();
-    await backupRecordCommand(createTestRuntime(), {
-      status: "ok",
-      target: "host",
-      bytes: "42",
-    });
+    await backupRecordCommand(createTestRuntime(), { status: "ok", target: "host", bytes });
     expect(await readBackupRuns(process.env)).toMatchObject([
-      { target: "host", status: "ok", bytes: 42 },
+      { target: "host", status: "ok", bytes: expected },
     ]);
   });
 
