@@ -9,6 +9,19 @@ export type BackupRecordOptions = {
   json?: boolean;
 };
 
+// Number() also accepts hex, octal, binary, exponent, signed, and whitespace-padded
+// forms; only canonical decimal integers are valid byte counts.
+function parseBackupBytes(value: string | number | undefined): number | undefined {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  }
+  if (value === undefined || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
 /** Host-owned jobs can contribute outcomes without changing their execution owner. */
 export async function backupRecordCommand(
   runtime: RuntimeEnv,
@@ -21,11 +34,8 @@ export async function backupRecordCommand(
   if (!target) {
     throw new Error("Missing required --target label.");
   }
-  const bytes = opts.bytes === undefined ? undefined : Number(opts.bytes);
-  if (
-    bytes !== undefined &&
-    (!Number.isSafeInteger(bytes) || bytes < 0 || String(opts.bytes).trim() === "")
-  ) {
+  const bytes = parseBackupBytes(opts.bytes);
+  if (opts.bytes !== undefined && bytes === undefined) {
     throw new Error("--bytes must be a nonnegative integer.");
   }
   const outcome = {

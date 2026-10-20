@@ -144,6 +144,28 @@ describe("backup outcome ownership", () => {
     });
   });
 
+  it("rejects non-canonical --bytes forms before recording", async () => {
+    await fixture();
+    for (const bytes of ["0x10", "0o17", "0b101", "1e3", "010", "+5", "1_000", " 42", "42 "]) {
+      await expect(
+        backupRecordCommand(createTestRuntime(), { status: "ok", target: "host", bytes }),
+      ).rejects.toThrow("--bytes must be a nonnegative integer.");
+    }
+    expect(await readBackupRuns(process.env)).toEqual([]);
+  });
+
+  it("records a decimal --bytes string", async () => {
+    await fixture();
+    await backupRecordCommand(createTestRuntime(), {
+      status: "ok",
+      target: "host",
+      bytes: "42",
+    });
+    expect(await readBackupRuns(process.env)).toMatchObject([
+      { target: "host", status: "ok", bytes: 42 },
+    ]);
+  });
+
   it("leaves database bytes unchanged when the live owner refuses the routed outcome", async () => {
     const { databasePath } = await fixture();
     await closeOpenClawStateDatabaseAsync();
