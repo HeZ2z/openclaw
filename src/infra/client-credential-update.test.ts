@@ -34,10 +34,7 @@ import { spawnNodeEvalSync } from "../test-utils/node-process.js";
 import { resolveClientCredentialStorePath } from "./client-credential-paths.js";
 import { readClientCredentialReceipt } from "./client-credential-readiness.js";
 import { CLIENT_CREDENTIAL_SCHEMA_SQL } from "./client-credential-schema.js";
-import {
-  installLegacyStat4,
-  stat4CompiledIn,
-} from "./client-credential-stat4.test-support.js";
+import { installLegacyStat4, stat4CompiledIn } from "./client-credential-stat4.test-support.js";
 import {
   openClientCredentialCustody,
   runClientCredentialOperation,

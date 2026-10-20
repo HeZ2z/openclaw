@@ -30,7 +30,7 @@ export function installLegacyStat4(pathname: string): void {
   const declared = Buffer.from(placeholder, "utf8");
   const replacement = Buffer.from("sqlite_stat4", "utf8");
   let replaced = 0;
-  for (let index = 0; index + declared.length <= bytes.length; ) {
+  for (let index = 0; index + declared.length <= bytes.length;) {
     if (bytes.subarray(index, index + declared.length).equals(declared)) {
       replacement.copy(bytes, index);
       replaced += 1;
