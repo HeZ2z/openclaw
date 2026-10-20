@@ -45,6 +45,10 @@ import {
   type SessionStopRequest,
 } from "../../sessions/session-controller.stop.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import {
+  cancelSkillExperienceReviewForSession,
+  suppressSkillExperienceReviewRuns,
+} from "../../skills/workshop/experience-review-default.js";
 import { resolveCommandAuthorizationAsync } from "../command-auth.js";
 import { resolveAbortCutoffFromContext, shouldPersistAbortCutoff } from "./abort-cutoff.js";
 import { setAbortMemory } from "./abort-primitives.js";
@@ -57,6 +61,9 @@ type ChannelStopTarget = SessionControllerInput | ReplyOperation;
 export type ChannelStopCapture = {
   controller: SessionControllerStopCapture;
   sessionId?: string;
+  /** Selected command target identity; cancellation keys the scheduler by these exact fields. */
+  agentId?: string;
+  sessionKey?: string;
   mcpSessionIds: ReadonlyMap<ChannelStopTarget, readonly string[]>;
   idleMcpRetirements: readonly NonNullable<ReturnType<typeof captureSessionMcpRuntimeRetirement>>[];
   commands: readonly ReturnType<typeof captureExecRequestCancellation>[];
@@ -184,6 +191,8 @@ function captureChannelStopResources(
   return {
     controller,
     sessionId: selectedSessionId,
+    agentId: commandTarget?.agentId,
+    sessionKey: commandTarget?.sessionKey,
     mcpSessionIds,
     idleMcpRetirements: idleMcpRetirement ? [idleMcpRetirement] : [],
     commands,
@@ -196,6 +205,7 @@ function captureChannelStopResources(
 }
 
 function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): ChannelStopCapture {
+  const primary = captures[0];
   return {
     controller: captureSessionControllerStop({
       inputs: captures.flatMap((capture) => [...capture.controller.inputs]),
@@ -203,6 +213,8 @@ function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): Ch
       effects: captures.flatMap((capture) => [...capture.controller.effects]),
       pendingCaptures: captures.map((capture) => capture.controller),
     }),
+    agentId: primary?.agentId,
+    sessionKey: primary?.sessionKey,
     mcpSessionIds: new Map(captures.flatMap((capture) => [...capture.mcpSessionIds])),
     idleMcpRetirements: captures.flatMap((capture) =>
       capture.idleMcpRetirements.filter((retirement) => retirement.sessionId === capture.sessionId),
@@ -210,6 +222,29 @@ function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): Ch
     commands: captures.flatMap((capture) => capture.commands),
     requestRunIds: new Set(captures.flatMap((capture) => [...capture.requestRunIds])),
   };
+}
+
+/**
+ * Explicit Stop cancels background learning for the stopped session and suppresses the
+ * stopped run ids until their own aborted completions arrive. Both are best-effort: a
+ * review failure must never fail `/stop`.
+ */
+function cancelSkillExperienceReviewForStoppedCapture(capture: ChannelStopCapture): void {
+  if (capture.agentId && capture.sessionKey) {
+    try {
+      cancelSkillExperienceReviewForSession({
+        agentId: capture.agentId,
+        sessionKey: capture.sessionKey,
+      });
+    } catch (error) {
+      logVerbose(`skill experience review cancellation failed: ${formatErrorMessage(error)}`);
+    }
+  }
+  try {
+    suppressSkillExperienceReviewRuns(capture.requestRunIds);
+  } catch (error) {
+    logVerbose(`skill experience review suppression failed: ${formatErrorMessage(error)}`);
+  }
 }
 
 /** Scope adapter only: cancellation and acceptance belong to the captured Stop kernel. */
@@ -226,6 +261,17 @@ export function abortSessionRunTargetWithOutcome(params: {
   let selectedCapture: ChannelStopCapture | undefined;
   const resolveCapture = () =>
     (selectedCapture ??= typeof params.capture === "function" ? params.capture() : params.capture);
+  // Own the capture before any cancellation effect, then bridge review cancellation once for
+  // every authorized Stop path (fast dispatch and command) before the captured runs abort.
+  let reviewStopApplied = false;
+  const ownCapture = () => {
+    const capture = resolveCapture();
+    if (!reviewStopApplied) {
+      reviewStopApplied = true;
+      cancelSkillExperienceReviewForStoppedCapture(capture);
+    }
+    return capture;
+  };
   const retiring = new Set<string>();
   const trackRetirement = (sessionId: string, start: () => Promise<void>) => {
     if (retiring.has(sessionId)) {
@@ -253,7 +299,7 @@ export function abortSessionRunTargetWithOutcome(params: {
   };
   return stopSession({
     source: "channel-user",
-    capture: () => resolveCapture().controller,
+    capture: () => ownCapture().controller,
     assertCurrent: params.assertCurrent,
     hookContext: params.hookContext,
     messageIdentity: params.messageIdentity,
@@ -262,7 +308,7 @@ export function abortSessionRunTargetWithOutcome(params: {
     externalParent: {
       stop: () => {
         let aborted = false;
-        for (const commands of resolveCapture().commands) {
+        for (const commands of ownCapture().commands) {
           params.assertCurrent?.();
           aborted = commands.cancel() || aborted;
         }
@@ -270,14 +316,14 @@ export function abortSessionRunTargetWithOutcome(params: {
       },
       get settled() {
         const settlement = Promise.all(
-          resolveCapture().commands.map((commands) => commands.settle()),
+          ownCapture().commands.map((commands) => commands.settle()),
         ).then(() => undefined);
         params.retirements.push(settlement);
         return settlement;
       },
     },
     afterQueued: () => {
-      const capture = resolveCapture();
+      const capture = ownCapture();
       params.afterQueued?.();
       for (const retirement of capture.idleMcpRetirements) {
         trackRetirement(retirement.sessionId, () =>
@@ -286,7 +332,7 @@ export function abortSessionRunTargetWithOutcome(params: {
       }
     },
     onCancelled: (target) => {
-      const capture = resolveCapture();
+      const capture = ownCapture();
       // Raw preparation and active producers retain custody after the Stop acknowledgment.
       if (!capture.mcpSessionIds.has(target) && "mailbox" in target) {
         params.retirements.push(captureSessionControllerSourceStopAcknowledgment(target));

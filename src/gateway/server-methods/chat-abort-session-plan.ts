@@ -228,6 +228,20 @@ export function prepareChatSessionAbort(
     }
   }
 
+  // Preview the identities this prepared Stop can cancel so an explicit-stop bridge can
+  // register suppression before the abort effect. The final result.runIds still records
+  // only what actually committed; these are the same selected identities.
+  const selectedRunIds = [
+    ...new Set([
+      ...capturedTargets.map(({ runId }) => runId),
+      ...[...controllerRuns.values()].map(({ runId }) => runId),
+      ...stopCapture.effects.flatMap((effect) => (effect.run?.runId ? [effect.run.runId] : [])),
+      ...(params.requester.isAdmin && canCancelWorkerSession
+        ? (workerCancellation?.runIds ?? [])
+        : []),
+    ]),
+  ];
+
   let workerCancellationPersistence: Promise<string[]> | undefined;
   let stopExecution: SessionStopExecution | undefined;
   // Reentrant cancellation can revoke the next effect. Keep committed outcomes
@@ -415,6 +429,7 @@ export function prepareChatSessionAbort(
     acceptsRequest,
     commands,
     sessionOrigin,
+    selectedRunIds,
     result,
     abort: abortAuthorizedRuns,
     async finish() {

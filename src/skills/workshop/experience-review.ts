@@ -100,17 +100,25 @@ export async function prepareSkillExperienceReviewCandidate(
 
 export async function runSkillExperienceReview(
   candidate: ExperienceReviewCandidate,
+  options: { abortSignal?: AbortSignal } = {},
 ): Promise<void> {
+  // An explicit stop cancels this session's review without touching others.
+  const abortSignal = options.abortSignal
+    ? AbortSignal.any([getGatewayRestartDrainSignal(), options.abortSignal])
+    : getGatewayRestartDrainSignal();
   // The foreground root has closed by the idle timer's callback. Admit this
   // detached review independently; a real Gateway drain still refuses it.
   await runWithGatewayDetachedWorkAdmission(
-    () => runSkillExperienceReviewInner(candidate),
+    () => runSkillExperienceReviewInner(candidate, abortSignal),
     "skills:experience-review",
+    abortSignal,
   );
 }
 
-async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidate): Promise<void> {
-  const abortSignal = getGatewayRestartDrainSignal();
+async function runSkillExperienceReviewInner(
+  candidate: ExperienceReviewCandidate,
+  abortSignal: AbortSignal,
+): Promise<void> {
   const { foregroundPromptContext, workspaceDir } = candidate.ctx;
   const { agentId } = foregroundPromptContext;
   const { sessionKey } = candidate.source;

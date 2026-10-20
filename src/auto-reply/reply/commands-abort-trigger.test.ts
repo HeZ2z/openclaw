@@ -9,7 +9,9 @@ const resolveCommandSessionEntryForKeyMock = vi.hoisted(() =>
   vi.fn(() => ({ entry: undefined, key: "agent:main:main" })),
 );
 const setAbortMemoryMock = vi.hoisted(() => vi.fn());
-const abortSessionRunTargetWithOutcomeMock = vi.hoisted(() => vi.fn());
+const stopSessionMock = vi.hoisted(() => vi.fn());
+const cancelSkillExperienceReviewForSessionMock = vi.hoisted(() => vi.fn());
+const suppressSkillExperienceReviewRunsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../globals.js", () => ({
   logVerbose: vi.fn(),
@@ -27,9 +29,20 @@ vi.mock("./abort-cutoff.js", () => ({
 
 vi.mock("./abort-operation.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./abort-operation.js")>()),
-  captureChannelSessionStop: vi.fn((params: { key?: string; sessionId?: string }) => params),
-  abortSessionRunTargetWithOutcome: abortSessionRunTargetWithOutcomeMock,
+  captureChannelSessionStop: vi.fn(
+    (params: { key?: string; sessionId?: string; agentId?: string }) => ({
+      ...params,
+      sessionKey: params.key,
+      requestRunIds: new Set(["run-1"]),
+    }),
+  ),
   stopSubagentsForRequester: vi.fn(async () => ({ stopped: 0, failed: 0 })),
+}));
+
+// mock-isolation: Run the real Stop kernel bridge against a captured fake Stop execution.
+vi.mock("../../sessions/session-controller.stop.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-controller.stop.js")>()),
+  stopSession: stopSessionMock,
 }));
 
 vi.mock("./abort-trigger-text.js", () => ({
@@ -43,6 +56,12 @@ vi.mock("./abort-primitives.js", () => ({
 vi.mock("./commands-session-store.js", () => ({
   persistAbortTargetEntry: persistAbortTargetEntryMock,
   resolveCommandSessionEntryForKey: resolveCommandSessionEntryForKeyMock,
+}));
+
+// mock-isolation: Observe the stop-bound experience-review cancellation without starting real work.
+vi.mock("../../skills/workshop/experience-review-default.js", () => ({
+  cancelSkillExperienceReviewForSession: cancelSkillExperienceReviewForSessionMock,
+  suppressSkillExperienceReviewRuns: suppressSkillExperienceReviewRunsMock,
 }));
 
 function buildAbortParams(): HandleCommandsParams {
@@ -85,34 +104,51 @@ function buildAbortParams(): HandleCommandsParams {
   } as unknown as HandleCommandsParams;
 }
 
+type FakeStopRequest = {
+  capture: () => unknown;
+  recordAbortTarget?: (options: { recordCutoff: boolean }) => Promise<void>;
+};
+
+function fakeStopOutcome(overrides: { alreadyFinalizing?: boolean } = {}) {
+  return {
+    aborted: false,
+    alreadyFinalizing: overrides.alreadyFinalizing ?? false,
+    queuedCancelled: 0,
+    activeCancelled: 0,
+    childrenStopped: 0,
+    childFailures: 0,
+    failures: [],
+    settled: Promise.resolve(),
+  };
+}
+
+function mockStopExecution(request: FakeStopRequest, outcome: ReturnType<typeof fakeStopOutcome>) {
+  return {
+    ...outcome,
+    completed: (async () => {
+      // Resolve the capture exactly like the real owner, which runs the review bridge.
+      request.capture();
+      // The real Stop owner skips abort metadata while the run is already finalizing.
+      if (!outcome.alreadyFinalizing) {
+        await request.recordAbortTarget?.({ recordCutoff: false });
+      }
+      return outcome;
+    })(),
+  };
+}
+
 describe("handleAbortTrigger", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    abortSessionRunTargetWithOutcomeMock.mockImplementation((params) => {
-      const outcome = {
-        aborted: false,
-        alreadyFinalizing: false,
-        queuedCancelled: 0,
-        activeCancelled: 0,
-        childrenStopped: 0,
-        childFailures: 0,
-        failures: [],
-        settled: Promise.resolve(),
-      };
-      return {
-        ...outcome,
-        completed: (async () => {
-          await params.recordAbortTarget?.({ recordCutoff: false });
-          return outcome;
-        })(),
-      };
-    });
+    stopSessionMock.mockImplementation((request: FakeStopRequest) =>
+      mockStopExecution(request, fakeStopOutcome()),
+    );
   });
 
   it("rejects unauthorized natural-language abort triggers", async () => {
     const result = await handleAbortTrigger(buildAbortParams(), true);
-    expect(result).toEqual({ shouldContinue: false });
-    expect(abortSessionRunTargetWithOutcomeMock).not.toHaveBeenCalled();
+    expect(result?.shouldContinue).toBe(false);
+    expect(stopSessionMock).not.toHaveBeenCalled();
     expect(persistAbortTargetEntryMock).not.toHaveBeenCalled();
     expect(setAbortMemoryMock).not.toHaveBeenCalled();
   });
@@ -121,32 +157,16 @@ describe("handleAbortTrigger", () => {
     const params = buildAbortParams();
     params.command.isAuthorizedSender = true;
     params.command.senderIsOwner = true;
-    abortSessionRunTargetWithOutcomeMock.mockImplementation((abortParams) => {
-      const outcome = {
-        aborted: false,
-        alreadyFinalizing: true,
-        queuedCancelled: 0,
-        activeCancelled: 0,
-        childrenStopped: 0,
-        childFailures: 0,
-        failures: [],
-        settled: Promise.resolve(),
-      };
-      return {
-        ...outcome,
-        completed: (async () => {
-          await abortParams.stopChildren?.(async () => true);
-          return outcome;
-        })(),
-      };
-    });
+    stopSessionMock.mockImplementation((request: FakeStopRequest) =>
+      mockStopExecution(request, fakeStopOutcome({ alreadyFinalizing: true })),
+    );
     const result = await handleAbortTrigger(params, true);
 
     expect(result).toEqual({
       shouldContinue: false,
       reply: { text: "Agent reply is already finalizing and can no longer be aborted." },
     });
-    expect(abortSessionRunTargetWithOutcomeMock).toHaveBeenCalledWith(
+    expect(stopSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         hookContext: expect.objectContaining({
           sessionKey: "agent:main:main",
@@ -157,5 +177,43 @@ describe("handleAbortTrigger", () => {
     );
     expect(persistAbortTargetEntryMock).not.toHaveBeenCalled();
     expect(setAbortMemoryMock).not.toHaveBeenCalled();
+    expect(cancelSkillExperienceReviewForSessionMock).toHaveBeenCalledExactlyOnceWith({
+      agentId: "main",
+      sessionKey: "agent:main:main",
+    });
+    expect(suppressSkillExperienceReviewRunsMock).toHaveBeenCalledExactlyOnceWith(
+      new Set(["run-1"]),
+    );
+  });
+
+  it("does not fail the stop when review cancellation throws", async () => {
+    const params = buildAbortParams();
+    params.command.isAuthorizedSender = true;
+    params.command.senderIsOwner = true;
+    cancelSkillExperienceReviewForSessionMock.mockImplementationOnce(() => {
+      throw new Error("review cancellation failed");
+    });
+
+    const result = await handleAbortTrigger(params, true);
+
+    expect(result?.shouldContinue).toBe(false);
+    expect(stopSessionMock).toHaveBeenCalledOnce();
+    // The two best-effort calls are independent: suppression still covers agent_end.
+    expect(suppressSkillExperienceReviewRunsMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not fail the stop when run suppression throws", async () => {
+    const params = buildAbortParams();
+    params.command.isAuthorizedSender = true;
+    params.command.senderIsOwner = true;
+    suppressSkillExperienceReviewRunsMock.mockImplementationOnce(() => {
+      throw new Error("review suppression failed");
+    });
+
+    const result = await handleAbortTrigger(params, true);
+
+    expect(result?.shouldContinue).toBe(false);
+    expect(cancelSkillExperienceReviewForSessionMock).toHaveBeenCalledOnce();
+    expect(stopSessionMock).toHaveBeenCalledOnce();
   });
 });

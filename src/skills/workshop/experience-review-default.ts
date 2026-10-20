@@ -18,13 +18,13 @@ const defaultScheduler = createSkillExperienceReviewScheduler({
       await import("../../sessions/session-controller.queries.js");
     return getActiveSessionRunCount() > 0;
   },
-  runReview: async (candidate) => {
+  runReview: async (candidate, signal) => {
     const { getRuntimeConfig } = await import("../../config/config.js");
     const { prepareSkillExperienceReviewCandidate, runSkillExperienceReview } =
       await import("./experience-review.js");
     const prepared = await prepareSkillExperienceReviewCandidate(candidate, getRuntimeConfig());
     if (prepared) {
-      await runSkillExperienceReview(prepared);
+      await runSkillExperienceReview(prepared, { abortSignal: signal });
     }
   },
 });
@@ -50,6 +50,19 @@ export function scheduleSkillExperienceReview(
     .catch((error: unknown) => {
       log.warn(`skill experience review scheduling failed: ${formatErrorMessage(error)}`);
     });
+}
+
+/** Drops queued and in-flight Experience Review work for one explicitly stopped session. */
+export function cancelSkillExperienceReviewForSession(params: {
+  agentId: string;
+  sessionKey: string;
+}): void {
+  defaultScheduler.cancelSession(params);
+}
+
+/** Ignores the stopped runs' own aborted completions; later turns still schedule. */
+export function suppressSkillExperienceReviewRuns(runIds: Iterable<string>): void {
+  defaultScheduler.suppressRuns(runIds);
 }
 
 /**

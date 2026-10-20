@@ -213,6 +213,9 @@ export async function handleChatAbortRequestWithLifecycle(
         assertCurrent,
         preserveSideRuns,
         cascadeDescendants: lifecycle.cascadeDescendants,
+        // Plain chat.abort is the user-facing Stop. Exact-run and discard paths do not
+        // own session review cancellation, so they stay unmarked.
+        cancelExperienceReview: true,
       },
       prepareAbortSession,
     );
