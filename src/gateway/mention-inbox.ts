@@ -22,6 +22,7 @@ import {
   sessionChanges,
 } from "../sessions/session-row-changes.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import {
   openClawStateDatabaseCache,
   registerOpenClawStateDatabaseAsyncResource,
@@ -528,42 +529,46 @@ export function createMentionInbox(params: MentionInboxOptions): MentionInbox {
       recipientProfileIds: [...committedInput.recipientProfileIds],
       committedSource: { ...committedInput.committedSource },
     };
-    return enqueue(async () => {
-      if (!prepareCommittedMentionInput(input)) {
-        return;
-      }
-      const cfg = params.getRuntimeConfig();
-      const { agentId } = resolveSessionStoreIdentity({
-        cfg,
-        sessionKey: input.sessionKey,
-        agentId: input.agentId,
-      });
-      const prepared = await prepareSessionSharingRead({
-        cfg,
-        sessionKey: input.sessionKey,
-        agentId,
-      });
-      try {
-        await policy.recordCommittedInvolvementAsync(input, prepared);
-        const committed = await mutate<StoredMention[]>(
-          (draft, guards, bounds) =>
-            applyCommittedInput(
-              input,
-              draft,
-              guards,
-              bounds,
-              () => prepared.readCurrent(params.getRuntimeConfig()).target,
-            ),
-          () => input.recipientProfileIds.map((id) => policy.readProfile(id)?.profileId ?? id),
-        );
-        context.admission.assertCurrent();
-        await refreshConnectedViews();
-        scheduleExpiry();
-        publishCommittedMentions(committed);
-      } finally {
-        prepared.release();
-      }
-    }).catch(() => {
+    // The accepted Inbox effect is independent of the caller: a commit hook may queue it
+    // while still holding the transcript writer, whose custody is gone by the time it runs.
+    return enqueue(() =>
+      runInDetachedAsyncContext(async () => {
+        if (!prepareCommittedMentionInput(input)) {
+          return;
+        }
+        const cfg = params.getRuntimeConfig();
+        const { agentId } = resolveSessionStoreIdentity({
+          cfg,
+          sessionKey: input.sessionKey,
+          agentId: input.agentId,
+        });
+        const prepared = await prepareSessionSharingRead({
+          cfg,
+          sessionKey: input.sessionKey,
+          agentId,
+        });
+        try {
+          await policy.recordCommittedInvolvementAsync(input, prepared);
+          const committed = await mutate<StoredMention[]>(
+            (draft, guards, bounds) =>
+              applyCommittedInput(
+                input,
+                draft,
+                guards,
+                bounds,
+                () => prepared.readCurrent(params.getRuntimeConfig()).target,
+              ),
+            () => input.recipientProfileIds.map((id) => policy.readProfile(id)?.profileId ?? id),
+          );
+          context.admission.assertCurrent();
+          await refreshConnectedViews();
+          scheduleExpiry();
+          publishCommittedMentions(committed);
+        } finally {
+          prepared.release();
+        }
+      }),
+    ).catch(() => {
       log.warn("Mention delivery could not be completed; the posted message is unchanged.");
     });
   }

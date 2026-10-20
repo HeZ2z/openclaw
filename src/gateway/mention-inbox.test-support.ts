@@ -72,8 +72,8 @@ export async function withMentionInbox(
 ) {
   await withOpenClawTestState(
     { scenario: "minimal", prepareProfileCatalog: options.retainProfileCatalog !== false },
-    async () => {
-      const fixture = await createFixture(cfg, options);
+    async (state) => {
+      const fixture = await createFixture(cfg, options, state.stateDir);
       try {
         await run(fixture);
       } finally {
@@ -83,7 +83,7 @@ export async function withMentionInbox(
   );
 }
 
-async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) {
+async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions, stateDir: string) {
   setRuntimeConfigSnapshot(cfg);
   const clock = createGatewaySchedulerClock(Date.now());
   const scheduler = createTestGatewayScheduler(clock.clock);
@@ -166,6 +166,7 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
   return {
     clock,
     scheduler,
+    stateDir,
     alice,
     bob,
     carol,

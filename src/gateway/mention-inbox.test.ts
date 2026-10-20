@@ -2,8 +2,15 @@ import { afterEach, expect, it, vi } from "vitest";
 import { validateMentionsListResult } from "../../packages/gateway-protocol/src/index.js";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import type { SessionEntryCohortReader } from "../config/sessions/session-entry-read-runtime.types.js";
+import {
+  getOwnedSessionTranscriptReader,
+  withOwnedSessionTranscriptWrites,
+} from "../config/sessions/transcript-write-context.js";
 import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { createWarnLogCapture } from "../logging/test-helpers/warn-log-capture.js";
+import { createUserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.js";
+import { createSqliteTranscriptTarget } from "../sessions/user-turn-transcript.test-support.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import {
   openOpenClawStateDatabase,
@@ -24,6 +31,7 @@ import {
 } from "./mention-inbox-store.worker.js";
 import * as mentionWorker from "./mention-inbox-worker.js";
 import {
+  SESSION_ID,
   SESSION_KEY,
   expectMentionError,
   withMentionInbox as withInbox,
@@ -34,6 +42,7 @@ import {
 } from "./mention-inbox.test-support.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
+import * as sessionSharingTargetRead from "./session-sharing-target-read.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -534,6 +543,110 @@ it("targets only the named person, synchronizes dismissal, and does not replay c
     } finally {
       sql.restore();
     }
+  }));
+
+it("delivers a committed mention after the transcript writer's custody has closed", () =>
+  withInbox(async (f) => {
+    await listInbox(f.inbox, f.bobClient);
+    const target = createSqliteTranscriptTarget({
+      dir: f.stateDir,
+      sessionId: SESSION_ID,
+      sessionKey: SESSION_KEY,
+    });
+    const text = "@Bob review **this change**";
+    const message = { role: "user" as const, content: text, timestamp: Date.now() };
+    // A Gateway sharing read borrows the reply operation's transcript reader. Closing that
+    // custody after the commit must not decide whether the already-accepted mention lands.
+    const reader = {
+      database: { agentId: "main", path: target.storePath, env: process.env },
+      sessionKey: SESSION_KEY,
+      logicalAgentId: "main",
+      storePaths: [target.storePath],
+      assertCurrent: () => {},
+      readEntry: async () => {
+        throw new Error("The mention delivery must not read the committed writer's entry");
+      },
+      withRead: async () => {
+        throw new Error("The mention delivery must not read through the committed writer");
+      },
+    } satisfies SessionEntryCohortReader;
+    let writerSettled = false;
+    let committedMessageId: string | undefined;
+    let delivery: Promise<void> | undefined;
+    const recorder = createUserTurnTranscriptRecorder({
+      message,
+      target,
+      assertOriginalInputCommit: () => {},
+      onOriginalInputCommitted: ({ message: committed, anchor }) => {
+        committedMessageId = anchor.entryId;
+        delivery = f.inbox.recordCommittedInputAsync({
+          sourceId: "transcript-mention",
+          committedSource: {
+            generation: anchor.generation,
+            sequence: anchor.rawSeq,
+            timestamp: committed.timestamp,
+          },
+          agentId: anchor.agentId,
+          sessionKey: SESSION_KEY,
+          sessionId: anchor.sessionId,
+          messageId: anchor.entryId,
+          senderProfileId: f.alice.id,
+          recipientProfileIds: [f.bob.id],
+          excerpt: text,
+        });
+      },
+    });
+    const assertWriterCustody = () => {
+      if (writerSettled) {
+        throw new Error("Original input custody changed before transcript commit");
+      }
+      recorder.assertOriginalInputCommit?.();
+    };
+    // Occupy the Inbox FIFO so the queued delivery runs after the transcript write returns.
+    const held = holdMentionRead();
+    const listing = listInbox(f.inbox, f.bobClient);
+    const realSharingRead = sessionSharingTargetRead.prepareSessionSharingRead;
+    vi.spyOn(sessionSharingTargetRead, "prepareSessionSharingRead").mockImplementationOnce(
+      async (params) => {
+        // The resident-projection read borrows the writer before falling back to its own read.
+        getOwnedSessionTranscriptReader({
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          sessionId: SESSION_ID,
+          storePath: target.storePath,
+        });
+        return await realSharingRead(params);
+      },
+    );
+    try {
+      await held.ready;
+      // Production original-input custody is active while the commit hook queues delivery.
+      await withOwnedSessionTranscriptWrites(
+        {
+          sessionKey: SESSION_KEY,
+          sessionTarget: target,
+          sessionReader: reader,
+          assertCommitAllowed: assertWriterCustody,
+          withTranscriptWrite: trackAsyncWork,
+        },
+        () => recorder.persistFallback(),
+      );
+      writerSettled = true;
+    } finally {
+      held.release();
+    }
+    await listing;
+    if (!delivery) {
+      throw new Error("Transcript commit did not hand off mention delivery");
+    }
+    await delivery;
+    const items = await f.items();
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ messageId: committedMessageId });
+    // The transcript writer is gone; the accepted Inbox effect must not depend on it.
+    expect(() => assertWriterCustody()).toThrow(
+      "Original input custody changed before transcript commit",
+    );
   }));
 
 it("never exposes a recipient selector, a raw identity, or a fabricated successful empty Inbox", () =>
