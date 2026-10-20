@@ -108,6 +108,23 @@ it("does not claim missing recovery coverage for bundled core-only and disposabl
   expect(input.warnings).toEqual([]);
 });
 
+it("keeps the Voice Call SQLite migration warning-free with its declared store", async () => {
+  const { stateMigrations } = await loadBundledPluginFacade<{
+    stateMigrations: PluginDoctorStateMigration[];
+  }>({ pluginId: "voice-call", artifactBasename: "doctor-contract-api.ts" });
+  const migration = stateMigrations.find(({ id }) => id === "voice-call-sqlite-schema");
+  if (!migration) {
+    throw new Error("Missing Voice Call SQLite migration");
+  }
+
+  const result = await collectResources(migration, "voice-call");
+
+  expect(result.resources).toEqual([
+    { path: path.join(stateDir, "voice-calls", "state", "openclaw.sqlite"), kind: "sqlite" },
+  ]);
+  expect(input.warnings).toEqual([]);
+});
+
 it("warns once per undeclared owner without running its migration", async () => {
   const result = await preparePluginDoctorMigrationResources(
     [

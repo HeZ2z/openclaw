@@ -75,6 +75,44 @@ describe.each(["default", "custom"] as const)("absent %s Voice Call store", (loc
   );
 });
 
+describe("voice-call migration backup resources", () => {
+  function schemaMigration() {
+    return expectDefined(stateMigrations[1], "voice-call schema migration");
+  }
+
+  it.each(["default", "absolute", "tilde"] as const)(
+    "declares the %s store SQLite database without touching the filesystem",
+    async (location) => {
+      const root = tempDirs.make("openclaw-voice-call-resources-");
+      const env = { ...process.env, HOME: root, OPENCLAW_STATE_DIR: root };
+      const configuredStore =
+        location === "default"
+          ? undefined
+          : location === "tilde"
+            ? "~/dollar-store"
+            : path.join(root, "custom-store");
+      const store =
+        location === "default"
+          ? path.join(root, "voice-calls")
+          : location === "tilde"
+            ? path.join(root, "dollar-store")
+            : expectDefined(configuredStore, "absolute configured store");
+      const before = await fs.readdir(root);
+      const collect = expectDefined(
+        schemaMigration().collectBackupResources,
+        "voice-call backup resource collector",
+      );
+
+      const databasePath = path.join(store, "state", "openclaw.sqlite");
+      expect(collect(migrationParams(root, env, configuredStore))).toEqual([
+        { path: databasePath, kind: "sqlite" },
+      ]);
+      await expect(fs.stat(path.dirname(databasePath))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(root)).toEqual(before);
+    },
+  );
+});
+
 describe("voice-call doctor state migration", () => {
   let stateDir = "";
   let storePath = "";
