@@ -191,6 +191,41 @@ describe("outbound", () => {
       );
       expect(result.messageId).toBe("normalized-target-msg");
     });
+
+    it.each(["user:alice", "dm:alice", "twitch:user:alice", "twitch:dm:alice"])(
+      "rejects unsupported direct target %s instead of falling back to the account channel",
+      async (to) => {
+        setupAccountContext();
+
+        await expect(twitchOutbound.sendText!({ ...sendParams, to })).rejects.toThrow(
+          "Delivering to Twitch requires target <channel-name>",
+        );
+        expect(sendMessageTwitchInternal).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["empty", ""],
+      ["whitespace-only", "   "],
+    ])("falls back to the account channel for an %s target", async (_name, to) => {
+      setupAccountContext();
+      vi.mocked(sendMessageTwitchInternal).mockResolvedValue({
+        messageId: "fallback-msg",
+        receipt: createMessageReceiptFromOutboundResults({
+          results: [
+            { channel: "twitch", conversationId: "testchannel", messageId: "fallback-msg" },
+          ],
+          kind: "text",
+        }),
+      });
+
+      const result = await twitchOutbound.sendText!({ ...sendParams, to });
+
+      expect(sendMessageTwitchInternal).toHaveBeenCalledWith(
+        expect.objectContaining({ channel: "testchannel" }),
+      );
+      expect(result.messageId).toBe("fallback-msg");
+    });
   });
 
   describe("sendText", () => {

@@ -74,9 +74,19 @@ export const twitchOutbound = {
       );
     }
 
-    const channel = to || account.channel;
-    if (!channel) {
-      throw new Error("No channel specified and no default channel in account config");
+    // Only an absent target falls back to the account's default channel. An explicit
+    // target that normalizes to empty (an unsupported DM/user address, or a bare "#")
+    // is rejected so it can never be silently delivered to the channel instead.
+    const target = to.trim();
+    const deliveryChannel = target
+      ? normalizeTwitchMessagingTarget(target)
+      : normalizeTwitchChannel(account.channel);
+    if (!deliveryChannel) {
+      throw new Error(
+        target
+          ? "Delivering to Twitch requires target <channel-name>"
+          : "No channel specified and no default channel in account config",
+      );
     }
 
     if (!configured) {
@@ -84,12 +94,6 @@ export const twitchOutbound = {
         `Account ${normalizedAccountId} is not properly configured. ` +
           "Required: username, clientId, and accessToken (config or env for default account).",
       );
-    }
-    // A target that normalizes to empty still uses the account's default channel.
-    const deliveryChannel =
-      normalizeTwitchMessagingTarget(channel) || normalizeTwitchChannel(account.channel);
-    if (!deliveryChannel) {
-      throw new Error("No channel specified and no default channel in account config");
     }
     const result = await sendMessageTwitchInternal({
       channel: deliveryChannel,
