@@ -207,7 +207,8 @@ describe("outbound", () => {
     it.each([
       ["empty", ""],
       ["whitespace-only", "   "],
-    ])("falls back to the account channel for an %s target", async (_name, to) => {
+      ["hash-only", "#"],
+    ])("keeps the account-channel fallback for %s targets", async (_name, to) => {
       setupAccountContext();
       vi.mocked(sendMessageTwitchInternal).mockResolvedValue({
         messageId: "fallback-msg",

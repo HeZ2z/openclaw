@@ -5,7 +5,7 @@ import { getClientManager } from "./client-manager-registry.js";
 import { resolveTwitchAccountContext } from "./config.js";
 import { TWITCH_CHAT_MESSAGE_LIMIT } from "./constants.js";
 import { sendMessageTwitchInternal } from "./send.js";
-import { normalizeTwitchMessagingTarget } from "./target.js";
+import { isTwitchDirectMessageTarget, normalizeTwitchMessagingTarget } from "./target.js";
 import type {
   ChannelOutboundAdapter,
   ChannelOutboundContext,
@@ -74,19 +74,17 @@ export const twitchOutbound = {
       );
     }
 
-    // Only an absent target falls back to the account's default channel. An explicit
-    // target that normalizes to empty (an unsupported DM/user address, or a bare "#")
-    // is rejected so it can never be silently delivered to the channel instead.
+    // Explicit DM/user addresses are unsupported and must not be delivered to the
+    // account channel. A channel target that normalizes to empty (for example a bare
+    // "#") still keeps the sender's default-channel fallback.
     const target = to.trim();
-    const deliveryChannel = target
-      ? normalizeTwitchMessagingTarget(target)
-      : normalizeTwitchChannel(account.channel);
+    if (isTwitchDirectMessageTarget(target)) {
+      throw new Error("Delivering to Twitch requires target <channel-name>");
+    }
+    const deliveryChannel =
+      normalizeTwitchMessagingTarget(target) || normalizeTwitchChannel(account.channel);
     if (!deliveryChannel) {
-      throw new Error(
-        target
-          ? "Delivering to Twitch requires target <channel-name>"
-          : "No channel specified and no default channel in account config",
-      );
+      throw new Error("No channel specified and no default channel in account config");
     }
 
     if (!configured) {
