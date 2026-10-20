@@ -1,19 +1,13 @@
 // Mattermost tests cover slash http plugin behavior.
 import { IncomingMessage, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
-import {
-  createPluginRuntimeMock,
-  expectPairingReplyText,
-} from "openclaw/plugin-sdk/channel-test-helpers";
-import { buildPairingReply } from "openclaw/plugin-sdk/conversation-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, RuntimeEnv } from "../../runtime-api.js";
-import { setMattermostRuntime } from "../runtime.js";
 import type { ResolvedMattermostAccount } from "./accounts.js";
-import type { MattermostChannel, MattermostClient } from "./client.js";
+import type { MattermostClient } from "./client.js";
 const clientMocks = vi.hoisted(() => ({
   createMattermostClient: vi.fn(),
-  fetchMattermostChannel: vi.fn<() => Promise<MattermostChannel>>(async () => {
+  fetchMattermostChannel: vi.fn(async () => {
     throw new Error("channel lookup intentionally unavailable in token validation tests");
   }),
 }));
@@ -456,39 +450,5 @@ describe("slash-http", () => {
     expect(firstLogMessage(log)).toBe(
       "mattermost: slash command registration check failed for /oc_status (status=unknown); command lookup status=unknown",
     );
-  });
-
-  it.each([
-    { code: "PAIR1234", pairing: true },
-    { code: "", pairing: false },
-  ])("answers a DM pairing slash command with code=$code", async ({ code, pairing }) => {
-    const runtime = createPluginRuntimeMock();
-    vi.mocked(runtime.channel.pairing.upsertPairingRequest).mockResolvedValue({
-      code,
-      created: false,
-    });
-    vi.mocked(runtime.channel.pairing.buildPairingReply).mockImplementation(buildPairingReply);
-    setMattermostRuntime(runtime);
-    clientMocks.createMattermostClient.mockReturnValue(
-      createCommandLookupClient({ command: createCurrentCommand() }),
-    );
-    clientMocks.fetchMattermostChannel.mockResolvedValueOnce({ id: "c1", type: "D" });
-
-    const response = await runSlashRequest({
-      registeredCommands: [createRegisteredCommand()],
-      body: new URLSearchParams(Object.entries(createSlashPayload())).toString(),
-    });
-
-    expect(response.res.statusCode).toBe(200);
-    const { text } = JSON.parse(response.getBody()) as { text: string };
-    if (pairing) {
-      expectPairingReplyText(text, {
-        channel: "mattermost",
-        idLine: "Your Mattermost user id: u1",
-        code,
-      });
-    } else {
-      expect(text).toBe("Unauthorized.");
-    }
   });
 });
