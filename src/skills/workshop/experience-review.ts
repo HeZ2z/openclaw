@@ -346,8 +346,10 @@ async function runSkillExperienceReviewInner(
     cleanupFailure = error;
   }
   if (cleanupFailure !== undefined) {
+    // Cleanup failure identity survives even when the model succeeded. Do not throw it bare:
+    // an aborted controller would classify a plain error as expected cancellation.
     throw reviewFailure === undefined
-      ? cleanupFailure
+      ? new AggregateError([cleanupFailure], "Skill experience review cleanup failed")
       : new AggregateError(
           [reviewFailure, cleanupFailure],
           "Skill experience review and its cleanup failed",

@@ -300,6 +300,34 @@ it("keeps an independent cleanup failure visible after cancellation", async () =
   );
 });
 
+it("keeps a cleanup-only failure visible after a stopped successful review", async () => {
+  runReview.mockImplementation(
+    (_candidate, signal) =>
+      new Promise<void>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () =>
+            reject(
+              new AggregateError(
+                [new Error("workshop change read failed")],
+                "Skill experience review cleanup failed",
+              ),
+            ),
+          { once: true },
+        );
+      }),
+  );
+  turn(10);
+  await fireTimers();
+  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
+  await setImmediate();
+
+  expect(log.debug).not.toHaveBeenCalled();
+  expect(log.warn).toHaveBeenCalledWith(
+    expect.stringContaining("Skill experience review cleanup failed"),
+  );
+});
+
 it("cancels only the stopped session's queued review", async () => {
   turn(10);
   turn(10, {
