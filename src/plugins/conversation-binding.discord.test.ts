@@ -38,11 +38,18 @@ type ThreadBindingTestHarness = {
   installThreadBindingLifecycleTestHooks: () => void;
 };
 
-const { loadDiscordThreadBindingTestHarness, resetThreadBindingsForTests } =
-  await loadBundledPluginFacade<{
-    loadDiscordThreadBindingTestHarness: () => Promise<ThreadBindingTestHarness>;
-    resetThreadBindingsForTests: () => Promise<void>;
-  }>({ pluginId: "discord", artifactBasename: "test-api.js" });
+const {
+  loadDiscordThreadBindingTestHarness,
+  resetThreadBindingsForTests,
+  unbindThreadBindingsBySessionKey,
+} = await loadBundledPluginFacade<{
+  loadDiscordThreadBindingTestHarness: () => Promise<ThreadBindingTestHarness>;
+  resetThreadBindingsForTests: () => Promise<void>;
+  unbindThreadBindingsBySessionKey: (params: {
+    targetSessionKey: string;
+    reason?: string;
+  }) => unknown[];
+}>({ pluginId: "discord", artifactBasename: "test-api.js" });
 const { setDiscordRuntime } = await loadBundledPluginFacade<{
   setDiscordRuntime: (runtime: PluginRuntime) => void;
 }>({ pluginId: "discord", artifactBasename: "runtime-api.js" });
@@ -99,8 +106,15 @@ async function setup() {
   const discord = expectDefined(getPluginInstance(record), "registered Discord instance");
   builder.registry.plugins.push(record);
   markPluginRegistryActive(builder.registry);
+  let retired = false;
+  const retire = () => {
+    if (!retired) {
+      retired = true;
+      markPluginRegistryRetired(builder.registry);
+    }
+  };
   owners.push({
-    retire: () => markPluginRegistryRetired(builder.registry),
+    retire,
     dispose: () => discord.dispose(),
   });
   discord.run(() => setDiscordRuntime(api.runtime));
@@ -128,7 +142,7 @@ async function setup() {
     );
   };
   const resolveBinding = () => getSessionBindingService().resolveByConversationAsync(conversation);
-  return { discord, foreign, manager, restart, resolveBinding, stored };
+  return { discord, foreign, manager, restart, resolveBinding, stored, retire };
 }
 
 describe("Discord thread binding ownership across plugin instances", () => {
@@ -197,5 +211,73 @@ describe("Discord thread binding ownership across plugin instances", () => {
     const restarted = await restart();
     expect(restarted.getByThreadId("user:456")?.metadata).toMatchObject({ summary: "second" });
     expect(restarted.getByThreadId("user:123")).toBeUndefined();
+  });
+
+  it("refuses a foreign plugin root without touching durable rows or memory", async () => {
+    const { foreign, manager, stored } = await setup();
+    const foreignIdentity = {
+      pluginId: "codex-other",
+      pluginName: "Codex Other",
+      pluginRoot: "/plugins/codex-other",
+    };
+
+    const detached = await foreign.run(() =>
+      detachPluginConversationBinding({
+        pluginRoot: foreignIdentity.pluginRoot,
+        conversation,
+      }),
+    );
+    const rebound = await foreign.run(() =>
+      requestPluginConversationBinding({
+        ...foreignIdentity,
+        conversation,
+        binding: { summary: "stolen" },
+      }),
+    );
+
+    expect(detached).toEqual({ removed: false });
+    expect(rebound).toMatchObject({ status: "error" });
+    expect(manager.getByThreadId("user:123")?.metadata).toMatchObject({ summary: "original" });
+    expect(await stored()).toMatchObject([
+      { key: "default:user:123", value: { metadata: { summary: "original" } } },
+    ]);
+  });
+
+  it("refuses a retired Discord owner without publishing memory or changing rows", async () => {
+    const { foreign, manager, retire, stored } = await setup();
+    retire();
+
+    await expect(
+      foreign.run(() =>
+        detachPluginConversationBinding({
+          pluginRoot: identity.pluginRoot,
+          conversation,
+        }),
+      ),
+    ).rejects.toThrow(/no longer active/);
+
+    expect(manager.getByThreadId("user:123")?.metadata).toMatchObject({ summary: "original" });
+    expect(await stored()).toMatchObject([
+      { key: "default:user:123", value: { metadata: { summary: "original" } } },
+    ]);
+  });
+
+  it("refuses a retired owner through the synchronous compatibility path", async () => {
+    const { manager, retire, stored } = await setup();
+    const binding = manager.getByThreadId("user:123");
+    expect(binding).toBeDefined();
+    retire();
+
+    expect(() =>
+      unbindThreadBindingsBySessionKey({
+        targetSessionKey: binding!.targetSessionKey,
+        reason: "plugin-detach",
+      }),
+    ).toThrow(/no longer active/);
+
+    expect(manager.getByThreadId("user:123")?.metadata).toMatchObject({ summary: "original" });
+    expect(await stored()).toMatchObject([
+      { key: "default:user:123", value: { metadata: { summary: "original" } } },
+    ]);
   });
 });

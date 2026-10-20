@@ -66,6 +66,22 @@ export const THREAD_BINDINGS_STATE = resolveGlobalSingleton(
   createThreadBindingsGlobalState,
 );
 
+// Source reloads adopt a predecessor's global object without running the factory,
+// so fields added after that object was created must be initialized in place.
+type AdoptedThreadBindingsGlobalState = Omit<
+  ThreadBindingsGlobalState,
+  "accountOperationTails" | "runtimeByManager"
+> &
+  Partial<Pick<ThreadBindingsGlobalState, "accountOperationTails" | "runtimeByManager">>;
+
+function ensureAdoptedThreadBindingsState(state: ThreadBindingsGlobalState): void {
+  const adopted = state as AdoptedThreadBindingsGlobalState;
+  adopted.accountOperationTails ??= new WeakMap();
+  adopted.runtimeByManager ??= new WeakMap();
+}
+
+ensureAdoptedThreadBindingsState(THREAD_BINDINGS_STATE);
+
 export const MANAGERS_BY_ACCOUNT_ID = THREAD_BINDINGS_STATE.managersByAccountId;
 export const BINDINGS_BY_THREAD_ID = THREAD_BINDINGS_STATE.bindingsByThreadId;
 const BINDINGS_BY_SESSION_KEY = THREAD_BINDINGS_STATE.bindingsBySessionKey;
@@ -114,6 +130,17 @@ export function openThreadBindingsStoreAsync(runtime?: PluginRuntime | null) {
     namespace: THREAD_BINDINGS_NAMESPACE,
     maxEntries: THREAD_BINDINGS_MAX_ENTRIES,
   });
+}
+
+/**
+ * Reject a retained runtime whose owning plugin instance was retired before a
+ * binding mutation takes effect. Opening the V2 store revalidates the retained
+ * runtime's live authority; the deprecated synchronous store does not.
+ */
+export function assertThreadBindingRuntimeCurrent(runtime?: PluginRuntime | null): void {
+  if (runtime) {
+    openThreadBindingsStoreAsync(runtime);
+  }
 }
 
 export function normalizeTargetKind(

@@ -18,3 +18,5 @@ export const loadDiscordGatewayCaptureFixture = () =>
 export const loadDiscordThreadBindingTestHarness = () =>
   import("./src/monitor/thread-bindings.lifecycle.test-support.js");
 export { resetThreadBindingsForTests } from "./src/monitor/thread-bindings.test-support.js";
+// Synchronous compatibility path; integration proof covers its retained-owner refusal.
+export { unbindThreadBindingsBySessionKey } from "./src/monitor/thread-bindings.lifecycle.js";

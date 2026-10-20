@@ -12,7 +12,10 @@ describe("thread binding manager state", () => {
     const stateKey = Symbol.for("openclaw.discordThreadBindingsState");
     const globalStore = globalThis as Record<PropertyKey, unknown>;
     const { THREAD_BINDINGS_STATE: originalState } = await import("./thread-bindings.state.js");
-    const predecessor = { ...originalState };
+    // Simulate a predecessor release whose shared registry predates the lifecycle maps.
+    const predecessor: Partial<typeof originalState> = { ...originalState };
+    delete predecessor.runtimeByManager;
+    delete predecessor.accountOperationTails;
     globalStore[stateKey] = predecessor;
 
     try {
@@ -20,6 +23,8 @@ describe("thread binding manager state", () => {
       const first = await import("./thread-bindings.manager.js");
       const { THREAD_BINDINGS_STATE: firstState } = await import("./thread-bindings.state.js");
       expect(firstState).toBe(predecessor);
+      expect(firstState.runtimeByManager).toBeInstanceOf(WeakMap);
+      expect(firstState.accountOperationTails).toBeInstanceOf(WeakMap);
       const manager = await first.createThreadBindingManager({
         cfg: EMPTY_DISCORD_TEST_CONFIG,
         accountId: "work",
