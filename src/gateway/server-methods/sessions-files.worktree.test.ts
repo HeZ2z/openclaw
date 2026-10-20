@@ -6,6 +6,7 @@ import * as sessions from "../../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { readRetainedSessionEntryFacts } from "../../config/sessions/session-entry-read-facts.js";
 import { readSessionEntriesFromStoreInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
@@ -37,9 +38,14 @@ vi.mock("../worker-environments/local-workspace-projection.js", async (importOri
 const key = "agent:main:worktree-files";
 
 async function dispatch(
-  method: "sessions.files.list" | "sessions.files.get" | "sessions.files.download",
+  method:
+    | "sessions.files.list"
+    | "sessions.files.get"
+    | "sessions.files.download"
+    | "sessions.files.set",
   filePath?: string,
   client: GatewayClient | null = null,
+  extraParams: Record<string, unknown> = {},
 ) {
   const respond = vi.fn();
   await handleGatewayRequest({
@@ -47,7 +53,12 @@ async function dispatch(
       type: "req",
       id: method,
       method,
-      params: { sessionKey: key, agentId: "main", ...(filePath ? { path: filePath } : {}) },
+      params: {
+        sessionKey: key,
+        agentId: "main",
+        ...(filePath ? { path: filePath } : {}),
+        ...extraParams,
+      },
     },
     client,
     context: createDirectChatContext({ getRuntimeConfig: () => ({}) }),
@@ -197,6 +208,92 @@ describe("sessions.files for managed-worktree sessions", () => {
       } finally {
         hooks.duringSettlement = undefined;
       }
+    });
+  });
+
+  it("refuses a stale save after the same chat replaces its worktree", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const entry = await seedWorktreeSession(state.workspaceDir);
+      const firstDir = path.join(state.workspaceDir, "worktree");
+      fs.writeFileSync(path.join(firstDir, "README.md"), "base\n");
+      const first = await dispatch("sessions.files.get", "README.md");
+      expect(first.mock.calls[0]?.[0]).toBe(true);
+      const staleHash = first.mock.calls[0]?.[1]?.file?.hash;
+      expect(staleHash).toEqual(expect.any(String));
+
+      // Same chat key, replacement managed worktree, byte-identical file.
+      const replacementDir = path.join(state.workspaceDir, "replacement");
+      fs.mkdirSync(replacementDir);
+      fs.writeFileSync(path.join(replacementDir, "README.md"), "base\n");
+      await sessions.upsertSessionEntryCore(
+        { agentId: "main", sessionKey: key },
+        {
+          ...entry,
+          updatedAt: 2,
+          spawnedCwd: replacementDir,
+          worktree: { ...entry.worktree, id: "wt-2" },
+        },
+      );
+      sessionChanges.emit({ sessionKey: key });
+
+      const draft = "draft from the original workspace\n";
+      const rejected = await dispatch("sessions.files.set", "README.md", null, {
+        content: draft,
+        expectedHash: staleHash,
+      });
+      expect(rejected.mock.calls[0]?.[0]).toBe(false);
+      expect(rejected.mock.calls[0]?.[2]).toMatchObject({
+        details: { type: "session_file_conflict" },
+      });
+      expect(fs.readFileSync(path.join(replacementDir, "README.md"), "utf8")).toBe("base\n");
+
+      const fresh = await dispatch("sessions.files.get", "README.md");
+      expect(fresh.mock.calls[0]?.[0]).toBe(true);
+      const freshHash = fresh.mock.calls[0]?.[1]?.file?.hash;
+      expect(freshHash).not.toBe(staleHash);
+
+      const saved = await dispatch("sessions.files.set", "README.md", null, {
+        content: draft,
+        expectedHash: freshHash,
+      });
+      expect(saved.mock.calls[0]?.[0]).toBe(true);
+      expect(fs.readFileSync(path.join(replacementDir, "README.md"), "utf8")).toBe(draft);
+    });
+  });
+
+  it("refuses a stale save when the same worktree id points at a new root", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const entry = await seedWorktreeSession(state.workspaceDir);
+      const firstDir = path.join(state.workspaceDir, "worktree");
+      fs.writeFileSync(path.join(firstDir, "README.md"), "base\n");
+      const first = await dispatch("sessions.files.get", "README.md");
+      expect(first.mock.calls[0]?.[0]).toBe(true);
+      const staleHash = first.mock.calls[0]?.[1]?.file?.hash;
+      expect(staleHash).toEqual(expect.any(String));
+
+      // The worktree id survives a create-with-cwd reset while the root changes.
+      const replacementDir = path.join(state.workspaceDir, "replacement");
+      fs.mkdirSync(replacementDir);
+      fs.writeFileSync(path.join(replacementDir, "README.md"), "base\n");
+      await sessions.upsertSessionEntryCore(
+        { agentId: "main", sessionKey: key },
+        { ...entry, updatedAt: 2, spawnedCwd: replacementDir },
+      );
+      sessionChanges.emit({ sessionKey: key });
+
+      const rejected = await dispatch("sessions.files.set", "README.md", null, {
+        content: "draft from the original root\n",
+        expectedHash: staleHash,
+      });
+      expect(rejected.mock.calls[0]?.[0]).toBe(false);
+      expect(rejected.mock.calls[0]?.[2]).toMatchObject({
+        details: { type: "session_file_conflict" },
+      });
+      expect(fs.readFileSync(path.join(replacementDir, "README.md"), "utf8")).toBe("base\n");
+
+      const freshHash = (await dispatch("sessions.files.get", "README.md")).mock.calls[0]?.[1]?.file
+        ?.hash;
+      expect(freshHash).not.toBe(staleHash);
     });
   });
 });

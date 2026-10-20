@@ -18,6 +18,21 @@ import { root as fsSafeRoot, FsSafeError, type ReadResult } from "../../infra/fs
 import { isPathInside } from "../../infra/path-guards.js";
 import { WORKSPACE_PREVIEW_MAX_BYTES } from "../workspace-file-limits.js";
 
+/**
+ * Session file CAS hashes bind the managed-workspace identity, so a hash read
+ * before a worktree replacement cannot match identical bytes in its successor.
+ */
+export function workspaceContentHash(
+  content: string | Uint8Array,
+  workspaceIdentity: string | undefined,
+): string {
+  if (!workspaceIdentity) {
+    return sha256Hex(content);
+  }
+  const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+  return sha256Hex(Buffer.concat([Buffer.from(`${workspaceIdentity}\0`, "utf8"), bytes]));
+}
+
 type LocalWorkspaceRoot = Awaited<ReturnType<typeof fsSafeRoot>>;
 export type WorkspaceRoot =
   | LocalWorkspaceRoot
@@ -257,7 +272,7 @@ export async function updateWorkspaceFile(
   content: string | Buffer,
   expectedHash: string | undefined,
   assertCurrent?: () => void,
-  options?: { maxBytes?: number },
+  options?: { maxBytes?: number; hashScope?: string },
 ): Promise<WorkspaceFileUpdateResult> {
   const workspaceRoot = await openWorkspaceRoot(rootDir);
   if (!workspaceRoot) {
@@ -279,7 +294,7 @@ export async function updateWorkspaceFile(
     if (typeof content === "string" && decodeUtf8Strict(current.buffer) === undefined) {
       return { status: "unsafe" };
     }
-    const currentHash = sha256Hex(current.buffer);
+    const currentHash = workspaceContentHash(current.buffer, options?.hashScope);
     if (expectedHash !== undefined && currentHash !== expectedHash) {
       return { status: "conflict", currentHash };
     }
@@ -296,7 +311,7 @@ export async function updateWorkspaceFile(
     return {
       status: "updated",
       canonicalPath: workspaceRelativePath(workspaceRoot.rootReal, current.realPath),
-      hash: sha256Hex(content),
+      hash: workspaceContentHash(content, options?.hashScope),
       stat,
     };
   });

@@ -100,6 +100,7 @@ async function loadSessionFileRoot(loaded: GatewaySessionEntryRead) {
       fileRoot: undefined,
       diffCwd: undefined,
       fileWorkspace: undefined,
+      workspaceIdentity: undefined,
     };
   }
   if (loaded.entry.repositoryWorkspaceId) {
@@ -109,6 +110,7 @@ async function loadSessionFileRoot(loaded: GatewaySessionEntryRead) {
       fileRoot: undefined,
       diffCwd: undefined,
       fileWorkspace: undefined,
+      workspaceIdentity: undefined,
     };
   }
   const fileWorkspace = await prepareSessionFileWorkspace(
@@ -124,6 +126,11 @@ async function loadSessionFileRoot(loaded: GatewaySessionEntryRead) {
     root,
     fileRoot: resolveFileRoot({ root, spawnedCwd }),
     diffCwd,
+    // A save token must bind the exact workspace target: the managed worktree id
+    // alone can survive a reset that changes the root behind the same chat key.
+    workspaceIdentity: loaded.entry.worktree?.id
+      ? `${loaded.entry.worktree.id}\0${root}`
+      : undefined,
   };
 }
 
@@ -245,6 +252,7 @@ async function loadSessionFiles(
     root: loaded.root,
     fileRoot: loaded.fileRoot,
     diffCwd: loaded.diffCwd,
+    workspaceIdentity: loaded.workspaceIdentity,
     files: [...files.values()].toSorted((a, b) => {
       if (a.kind !== b.kind) {
         return a.kind === "modified" ? -1 : 1;
@@ -571,6 +579,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
               ...params,
               root: loaded.root,
               fileRoot: loaded.fileRoot,
+              workspaceIdentity: loaded.workspaceIdentity,
               assertCurrent: authorize,
             });
         assertSourceCurrent();

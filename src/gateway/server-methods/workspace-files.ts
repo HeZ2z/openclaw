@@ -1,6 +1,5 @@
 import path from "node:path";
 import { detectMime } from "@openclaw/media-core/mime";
-import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type {
   SessionFileBrowserEntry,
@@ -31,6 +30,7 @@ import {
   type WorkspaceRoot,
   updateWorkspaceFile,
   type WorkspaceFileUpdateResult,
+  workspaceContentHash,
   workspaceRelativePath,
 } from "./workspace-fs.js";
 
@@ -38,6 +38,8 @@ export type TouchedFile = { path: string; kind: "modified" | "read" };
 export type LoadedSessionFiles = SessionFileReadBoundary & {
   diffCwd?: string;
   files: TouchedFile[];
+  /** Managed-worktree identity that owns the session's current file target. */
+  workspaceIdentity?: string;
 };
 const MAX_BROWSER_ENTRIES = 250;
 const MAX_SEARCH_ENTRIES = 500;
@@ -130,6 +132,7 @@ function isDetectedTextMime(mimeType: string): boolean {
 export async function populateSessionFilePreview(
   entry: SessionFileEntry,
   buffer: Buffer,
+  workspaceIdentity?: string,
 ): Promise<void> {
   const mimeType = await detectMime({ buffer });
   if (mimeType && BROWSER_IMAGE_MIME_TYPES.has(mimeType)) {
@@ -147,7 +150,7 @@ export async function populateSessionFilePreview(
     entry.content = text;
     // The hash doubles as the sessions.files.set CAS token. Binary files
     // never receive one, so replacement characters cannot be saved back.
-    entry.hash = sha256Hex(buffer);
+    entry.hash = workspaceContentHash(buffer, workspaceIdentity);
     return;
   }
   entry.previewKind = "unsupported";
@@ -166,6 +169,7 @@ async function toSessionFileEntry(
     assertCurrent?: () => void;
     authorizeHostRead?: () => Promise<boolean>;
     onOutsideBoundary?: () => void;
+    workspaceIdentity?: string;
   } = {},
 ): Promise<SessionFileEntry> {
   const target = await resolveSessionFileReadTarget(
@@ -214,7 +218,7 @@ async function toSessionFileEntry(
   entry.size = read.stat.size;
   entry.updatedAtMs = toUpdatedAtMs(read.stat.mtimeMs);
   if (inline) {
-    await populateSessionFilePreview(entry, read.buffer);
+    await populateSessionFilePreview(entry, read.buffer, opts.workspaceIdentity);
     if (read.readOnly || target.outside) {
       delete entry.hash;
     }
@@ -422,6 +426,7 @@ export async function getSessionWorkspaceFile(
     includeContent: params.includeContent !== false,
     assertCurrent: params.assertCurrent,
     authorizeHostRead: params.authorizeHostRead,
+    workspaceIdentity: params.workspaceIdentity,
     onOutsideBoundary: () => {
       outsideBoundary = true;
     },
@@ -487,6 +492,7 @@ export async function setSessionWorkspaceFile(params: {
   path: string;
   content: string;
   expectedHash: string;
+  workspaceIdentity?: string;
   assertCurrent?: () => void;
 }): Promise<SessionWorkspaceWriteResult> {
   // Reject content the preview cannot round-trip, before encoding oversized input.
@@ -528,6 +534,7 @@ export async function setSessionWorkspaceFile(params: {
       params.content,
       params.expectedHash,
       params.assertCurrent,
+      params.workspaceIdentity ? { hashScope: params.workspaceIdentity } : undefined,
     );
   } catch (error) {
     if (!(error instanceof FsSafeError)) {
