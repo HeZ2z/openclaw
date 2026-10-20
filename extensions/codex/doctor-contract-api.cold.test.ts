@@ -87,3 +87,31 @@ it("detects Codex legacy state without loading session storage", async () => {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+it("collects Codex sidecar backup inventory without loading session storage", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-doctor-cold-"));
+  const stateDir = path.join(root, "state");
+  const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+  const sessionsDir = path.join(root, "import", "main");
+  const sidecar = path.join(sessionsDir, "legacy.jsonl.codex-app-server.json");
+  const migration = stateMigrations[0]!;
+  try {
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionsDir, "sessions.json"),
+      JSON.stringify({ "agent:main:main": { sessionId: "legacy" } }),
+    );
+    await fs.writeFile(sidecar, "{}");
+    await expect(
+      migration.collectBackupResources!({
+        config: {
+          session: { store: path.join(root, "import", "{agentId}", "sessions.json") },
+        },
+        env,
+        stateDir,
+      }),
+    ).resolves.toEqual([{ path: await fs.realpath(sidecar), kind: "file" }]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

@@ -39,7 +39,7 @@ const LEGACY_BINDING_LOCK_OPTIONS: FileLockOptions = {
 };
 
 type MigrationParams = Parameters<PluginDoctorStateMigration["migrateLegacyState"]>[0];
-type MigrationEnvironment = Pick<MigrationParams, "config" | "env" | "stateDir">;
+export type MigrationEnvironment = Pick<MigrationParams, "config" | "env" | "stateDir">;
 
 type SessionSurface = {
   root: string;
@@ -143,7 +143,7 @@ async function collectSessionSurfaces(params: MigrationEnvironment): Promise<Ses
   return [...surfaces.values()].toSorted((a, b) => a.root.localeCompare(b.root));
 }
 
-async function collectLegacyBindingSources(
+export async function collectLegacyBindingSources(
   params: MigrationEnvironment,
   options: { firstOnly?: boolean } = {},
 ): Promise<{ sources: LegacyBindingSource[]; surfaces: SessionSurface[] }> {

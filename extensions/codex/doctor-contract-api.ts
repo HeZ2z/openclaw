@@ -187,6 +187,10 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     label: "Codex app-server thread bindings",
     // Config normalization loads this artifact too; state-only imports belong
     // behind the detection and migration callbacks.
+    collectBackupResources: async (params) =>
+      (
+        await import("./src/migration/session-binding-backup.js")
+      ).collectLegacySessionBindingBackupResources(params),
     detectLegacyState: async (params) =>
       (
         await import("./src/migration/session-binding-sidecars.js")

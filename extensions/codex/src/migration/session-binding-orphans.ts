@@ -143,6 +143,8 @@ export const codexOrphanedSessionBindingMigration: PluginDoctorStateMigration = 
   label: "Codex app-server orphaned session bindings",
   doctorOnly: true,
   phase: "after-session-repair",
+  // Repair deletes plugin-state rows that the captured state database covers.
+  collectBackupResources: () => [],
   async detectLegacyState(params) {
     for await (const _ of iterateOrphanBindingPages(params)) {
       return { preview: ["- Codex app-server bindings: remove orphaned session ownership"] };

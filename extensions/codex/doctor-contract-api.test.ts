@@ -299,6 +299,22 @@ describe("codex doctor contract", () => {
     );
   });
 
+  it("declares discovered binding sidecars as backup inventory", async () => {
+    const fixture = await bindingFixture("inventory-sidecar");
+    const params = {
+      config: fixture.params.config,
+      env: fixture.params.env,
+      stateDir: fixture.params.stateDir,
+    };
+
+    await expect(fixture.migration.collectBackupResources!(params)).resolves.toEqual([
+      { path: await fs.realpath(fixture.sidecarPath), kind: "file" },
+    ]);
+
+    await fs.rm(fixture.sidecarPath);
+    await expect(fixture.migration.collectBackupResources!(params)).resolves.toEqual([]);
+  });
+
   it("preserves ambiguous shared-root bindings with a missing system agent", async () => {
     const defaults = { systemAgent: { agentId: "missing" } };
     const fixture = await bindingFixture("explicit-owner", {
