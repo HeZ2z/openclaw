@@ -321,6 +321,78 @@ struct CLIInstallerTests {
         #expect(!CLIInstaller.satisfiesUpdateTarget(installedVersion: "2026.9.8", targetVersion: "2026.10.2"))
     }
 
+    // Standalone repair exits 2 when Doctor maintenance is deferred; warnings on a
+    // successful exit are completed-finalization advisories.
+    @Test(arguments: [(Int32(0), true), (Int32(2), false)])
+    func `managed repair settles pending core work only for a successful finalization result`(
+        exitCode: Int32,
+        completes: Bool) async throws
+    {
+        let root = try makeTempDirForTests()
+        defer { try? FileManager().removeItem(at: root) }
+        let executable = root.appendingPathComponent("openclaw")
+        let payload = root.appendingPathComponent("repair.json")
+        try """
+        {"status":"warning","mode":"finalize","restart":false,"phaseTimings":[],
+        "postUpdate":{"doctor":{"status":"warning","warnings":["Doctor maintenance remains pending."]}}}
+        """.write(to: payload, atomically: false, encoding: .utf8)
+        try """
+        #!/bin/sh
+        if [ "$1" = "--version" ]; then
+          echo 'OpenClaw 2026.9.1'
+          exit 0
+        fi
+        cat '\(payload.path)'
+        exit \(exitCode)
+        """.write(to: executable, atomically: false, encoding: .utf8)
+        try FileManager().setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let config = root.appendingPathComponent("openclaw.json")
+        try "{}".write(to: config, atomically: false, encoding: .utf8)
+        try await TestIsolation.withIsolatedState(
+            env: ["OPENCLAW_STATE_DIR": root.path, "OPENCLAW_CONFIG_PATH": config.path],
+            defaults: [cliInstallPolicyKey: "exact", postAppUpdateReceiptKey: nil])
+        {
+            let absent = root.appendingPathComponent("absent-service")
+            let authority = GatewayLaunchAgentManager.ServiceAuthority(
+                plist: absent,
+                environment: absent,
+                wrapper: absent,
+                definition: .init(plist: nil, environment: nil, wrapper: nil),
+                isLocalGateway: false,
+                updateSelection: CLIInstallPolicy.managedUpdateSelection())
+            var receipt = PostAppUpdateReceipt(
+                fromVersion: "2026.9.1", toVersion: "2026.9.1", recordedAt: .distantPast)
+            var dispatched = false
+            let outcome = await CLIInstaller.updateManaged(
+                targetVersion: "2026.9.1",
+                restartGateway: false,
+                repair: true,
+                installedCLI: .init(
+                    prefix: [executable.path],
+                    sqliteLibrary: nil,
+                    serviceAuthority: authority),
+                onDispatch: {
+                    dispatched = true
+                    receipt = PostAppUpdateReceiptStore.recordCoreUpdateDispatch(
+                        receipt: receipt, owner: .gateway)
+                },
+                statusHandler: { _ in })
+            #expect(dispatched)
+            switch outcome {
+            case let .success(_, installedVersion):
+                #expect(completes)
+                #expect(installedVersion == "2026.9.1")
+                receipt = PostAppUpdateReceiptStore.completeCoreRepair(receipt: receipt, owner: .gateway)
+            case .failure:
+                #expect(!completes)
+                #expect(receipt.coreUpdatePending)
+            }
+            #expect(PostUpdateController.coreRepairAction(
+                receipt: receipt, migrationFailed: false, explicitRetry: false) ==
+                (completes ? .none : .repair))
+        }
+    }
+
     @Test func `managed update parses structured updater diagnostics`() throws {
         let summary = try #require(CLIInstaller.parseManagedUpdateSummary("""
         {

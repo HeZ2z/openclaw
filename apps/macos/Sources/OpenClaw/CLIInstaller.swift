@@ -633,7 +633,15 @@ enum CLIInstaller {
         let summary = self.parseManagedUpdateSummary(response.stdout)
 
         let reportedStatus = summary?.status
-        guard response.success, reportedStatus != "error", reportedStatus != "warning" else {
+        // `update repair` reports a completed finalization with nonfatal warnings as
+        // `status: "warning"` and exits successfully. Deferred Doctor maintenance exits
+        // nonzero instead (standalone repair exits 2), so only a successful exit proves
+        // that no required repair work remains pending.
+        let completedRepairWarning = repair && reportedStatus == "warning"
+        guard response.success,
+              reportedStatus != "error",
+              reportedStatus != "warning" || completedRepairWarning
+        else {
             let reason = summary?.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
             // Another updater can win between the version probe and CLI dispatch.
             // The CLI's downgrade refusal preserves that newer installation; verify it
