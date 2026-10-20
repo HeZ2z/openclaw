@@ -66,23 +66,6 @@ export const THREAD_BINDINGS_STATE = resolveGlobalSingleton(
   createThreadBindingsGlobalState,
 );
 
-// Source reloads adopt a predecessor's global object without running the factory,
-// so fields added after that object was created must be initialized in place.
-type AdoptedThreadBindingsGlobalState = Omit<
-  ThreadBindingsGlobalState,
-  "accountOperationTails" | "runtimeByManager"
-> &
-  Partial<Pick<ThreadBindingsGlobalState, "accountOperationTails" | "runtimeByManager">>;
-
-function ensureAdoptedThreadBindingsState(state: ThreadBindingsGlobalState): void {
-  // A predecessor's object carries this registry's fields without the maps added later.
-  const adopted: AdoptedThreadBindingsGlobalState = state;
-  adopted.accountOperationTails ??= new WeakMap();
-  adopted.runtimeByManager ??= new WeakMap();
-}
-
-ensureAdoptedThreadBindingsState(THREAD_BINDINGS_STATE);
-
 export const MANAGERS_BY_ACCOUNT_ID = THREAD_BINDINGS_STATE.managersByAccountId;
 export const BINDINGS_BY_THREAD_ID = THREAD_BINDINGS_STATE.bindingsByThreadId;
 const BINDINGS_BY_SESSION_KEY = THREAD_BINDINGS_STATE.bindingsBySessionKey;
