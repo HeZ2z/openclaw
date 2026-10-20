@@ -21,6 +21,7 @@ import { SessionTranscriptReadFenceError } from "../../config/sessions/session-t
 import { withSessionTranscriptReadSource } from "../../config/sessions/session-transcript-read-source.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import {
   readSqliteDatabaseScopedWriteTokenForPath,
   retainSqliteDatabaseWriteScopesForPath,
@@ -363,6 +364,8 @@ async function runSkillExperienceReviewInner(
         name: "AbortError",
       });
     }
-    throw reviewFailure;
+    throw reviewFailure instanceof Error
+      ? reviewFailure
+      : new Error(formatErrorMessage(reviewFailure));
   }
 }
