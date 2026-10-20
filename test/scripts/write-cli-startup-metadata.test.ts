@@ -65,6 +65,7 @@ const sourceHelpRenderers = {
 
 type WrittenMetadata = {
   channelOptions: string[];
+
   generatorSignature: string;
   rootHelpText: string;
   browserHelpText: string;
@@ -181,6 +182,74 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await receipts.close();
+});
+
+describe("isolated root help render environment", () => {
+  const stateDir = "/tmp/openclaw-render-state";
+  const bundledPluginsDir = "/tmp/openclaw-render-plugins";
+  const renderEnv = (platform: NodeJS.Platform, hostEnv: NodeJS.ProcessEnv = {}) =>
+    testing.createIsolatedRootHelpRenderEnvironment({
+      bundledPluginsDir,
+      stateDir,
+      platform,
+      hostEnv,
+    });
+
+  it("passes the Windows boot variables a render child needs", () => {
+    const env = renderEnv("win32", {
+      PATH: "C:\\Windows\\System32",
+      SystemRoot: "D:\\Windows",
+      TEMP: "D:\\Temp",
+      TMP: "D:\\Tmp",
+      COMSPEC: "D:\\Windows\\System32\\cmd.exe",
+      LOGNAME: "builder",
+    });
+
+    expect(env.SystemRoot).toBe("D:\\Windows");
+    expect(env.windir).toBe("D:\\Windows");
+    expect(env.TEMP).toBe("D:\\Temp");
+    expect(env.TMP).toBe("D:\\Tmp");
+    expect(env.TMPDIR).toBe("D:\\Temp");
+    expect(env.COMSPEC).toBe("D:\\Windows\\System32\\cmd.exe");
+    expect(env.HOME).toBe(path.join(stateDir, "home"));
+    expect(env.OPENCLAW_STATE_DIR).toBe(stateDir);
+  });
+
+  it("uses a host windir when SystemRoot is absent", () => {
+    const env = renderEnv("win32", { PATH: "C:\\Windows", windir: "D:\\Windows" });
+
+    expect(env.SystemRoot).toBe("D:\\Windows");
+    expect(env.windir).toBe("D:\\Windows");
+  });
+
+  it("defaults Windows boot variables when the host omits them", () => {
+    const env = renderEnv("win32", { PATH: "C:\\Windows\\System32" });
+
+    expect(env.SystemRoot).toBe("C:\\Windows");
+    expect(env.windir).toBe("C:\\Windows");
+    expect(env.TEMP).toBe(path.win32.join("C:\\Windows", "Temp"));
+    expect(env.TMP).toBe(env.TEMP);
+    expect(env.COMSPEC).toBeUndefined();
+  });
+
+  it("does not add Windows boot variables on POSIX platforms", () => {
+    const env = renderEnv("darwin", { PATH: "/usr/bin", SystemRoot: "D:\\Windows" });
+
+    expect(env.SystemRoot).toBeUndefined();
+    expect(env.windir).toBeUndefined();
+    expect(env.COMSPEC).toBeUndefined();
+    expect(env.TMPDIR).toBe("/tmp");
+  });
+
+  it("does not leak unrelated host variables into the isolated environment", () => {
+    const env = renderEnv("win32", {
+      PATH: "C:\\Windows",
+      SystemRoot: "C:\\Windows",
+      OPENCLAW_GATEWAY_TOKEN: "secret",
+    });
+
+    expect(env.OPENCLAW_GATEWAY_TOKEN).toBeUndefined();
+  });
 });
 
 describe("write-cli-startup-metadata", () => {

@@ -379,26 +379,57 @@ async function settleRootHelpRenderPromises<T extends readonly unknown[]>(
   };
 }
 
-function createIsolatedRootHelpRenderContext(
-  bundledPluginsDir: string,
-  stateDir: string,
-): RootHelpRenderContext {
-  const workspaceDir = path.join(stateDir, "workspace");
+/**
+ * Builds the isolated render child environment. Windows children need the host's
+ * boot-time variables (SystemRoot and friends) because Node initializes the OpenSSL
+ * CSPRNG before user code runs; a POSIX-shaped environment aborts the child there.
+ */
+function createIsolatedRootHelpRenderEnvironment(params: {
+  bundledPluginsDir: string;
+  stateDir: string;
+  platform?: NodeJS.Platform;
+  hostEnv?: NodeJS.ProcessEnv;
+}): NodeJS.ProcessEnv {
+  const { bundledPluginsDir, stateDir } = params;
+  const platform = params.platform ?? process.platform;
+  const hostEnv = params.hostEnv ?? process.env;
   const homeDir = path.join(stateDir, "home");
   const env: NodeJS.ProcessEnv = {
     HOME: homeDir,
-    LOGNAME: process.env.LOGNAME ?? process.env.USER ?? "openclaw-build",
-    USER: process.env.USER ?? process.env.LOGNAME ?? "openclaw-build",
-    PATH: process.env.PATH ?? "",
-    TMPDIR: process.env.TMPDIR ?? "/tmp",
-    LANG: process.env.LANG ?? "C.UTF-8",
-    LC_ALL: process.env.LC_ALL ?? "C.UTF-8",
-    TERM: process.env.TERM ?? "dumb",
+    LOGNAME: hostEnv.LOGNAME ?? hostEnv.USER ?? "openclaw-build",
+    USER: hostEnv.USER ?? hostEnv.LOGNAME ?? "openclaw-build",
+    PATH: hostEnv.PATH ?? "",
+    TMPDIR: hostEnv.TMPDIR ?? "/tmp",
+    LANG: hostEnv.LANG ?? "C.UTF-8",
+    LC_ALL: hostEnv.LC_ALL ?? "C.UTF-8",
+    TERM: hostEnv.TERM ?? "dumb",
     NO_COLOR: "1",
     OPENCLAW_BUNDLED_PLUGINS_DIR: bundledPluginsDir,
     OPENCLAW_DISABLE_BUNDLED_PLUGINS: "",
     OPENCLAW_STATE_DIR: stateDir,
   };
+  if (platform === "win32") {
+    const systemRoot =
+      hostEnv.SystemRoot ?? hostEnv.SYSTEMROOT ?? hostEnv.windir ?? hostEnv.WINDIR ?? "C:\\Windows";
+    env.SystemRoot = systemRoot;
+    env.windir = hostEnv.windir ?? hostEnv.WINDIR ?? systemRoot;
+    env.TEMP = hostEnv.TEMP ?? hostEnv.TMP ?? hostEnv.TMPDIR ?? path.win32.join(systemRoot, "Temp");
+    env.TMP = hostEnv.TMP ?? env.TEMP;
+    env.TMPDIR = env.TEMP;
+    const comspec = hostEnv.COMSPEC ?? hostEnv.ComSpec;
+    if (comspec) {
+      env.COMSPEC = comspec;
+    }
+  }
+  return env;
+}
+
+function createIsolatedRootHelpRenderContext(
+  bundledPluginsDir: string,
+  stateDir: string,
+): RootHelpRenderContext {
+  const workspaceDir = path.join(stateDir, "workspace");
+  const env = createIsolatedRootHelpRenderEnvironment({ bundledPluginsDir, stateDir });
   const config: OpenClawConfig = {
     agents: {
       defaults: {
@@ -1089,6 +1120,7 @@ function hasAllPrecomputedSubcommandHelpText(value: unknown): boolean {
 }
 
 export const testing = {
+  createIsolatedRootHelpRenderEnvironment,
   renderSourceRootHelpText,
   spawnText,
   writeCliStartupMetadata,
