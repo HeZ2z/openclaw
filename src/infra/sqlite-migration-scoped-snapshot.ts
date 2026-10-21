@@ -196,6 +196,94 @@ function* readRows(
   }
 }
 
+function scopedColumns(database: DatabaseSync, table: string): string[] | undefined {
+  const exists = database
+    .prepare("SELECT 1 AS found FROM sqlite_schema WHERE type = 'table' AND name = ?")
+    .get(table);
+  if (!exists) {
+    return undefined;
+  }
+  // SAFETY: SQLite table_xinfo returns string column names and integer hidden flags.
+  const columns = database.prepare(`PRAGMA table_xinfo(${quote(table)})`).all() as Array<{
+    name: string;
+    hidden: number;
+  }>;
+  return columns.filter((column) => column.hidden === 0).map((column) => column.name);
+}
+
+function scopedRowDigests(database: DatabaseSync, table: string, columns: string[]): string[] {
+  const digests: string[] = [];
+  for (const row of readRows(
+    database,
+    `SELECT ${columns.map(quote).join(", ")} FROM ${quote(table)}`,
+    columns,
+  )) {
+    digests.push(
+      createHash("sha256")
+        .update(
+          JSON.stringify(
+            row.map((value) =>
+              value === null
+                ? null
+                : [
+                    typeof value,
+                    typeof value === "object"
+                      ? Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString(
+                          "hex",
+                        )
+                      : String(value),
+                  ],
+            ),
+          ),
+        )
+        .digest("hex"),
+    );
+  }
+  return digests.toSorted();
+}
+
+/**
+ * A reused retry image is only fresh capture coverage while every declared
+ * non-statistics row still matches the transaction that would retire it.
+ */
+export function scopedTableRowsMatchFullBackup(params: {
+  source: DatabaseSync;
+  backupPath: string;
+  tables: readonly string[];
+}): boolean {
+  const backup = openNodeSqliteDatabase(params.backupPath, { readOnly: true });
+  try {
+    for (const table of params.tables) {
+      if (isStatisticTable(table)) {
+        continue;
+      }
+      const sourceColumns = scopedColumns(params.source, table);
+      if (sourceColumns === undefined) {
+        continue;
+      }
+      const backupColumns = scopedColumns(backup, table);
+      if (
+        backupColumns === undefined ||
+        backupColumns.length !== sourceColumns.length ||
+        backupColumns.some((column, index) => column !== sourceColumns[index])
+      ) {
+        return false;
+      }
+      const current = scopedRowDigests(params.source, table, sourceColumns);
+      const saved = scopedRowDigests(backup, table, backupColumns);
+      if (
+        current.length !== saved.length ||
+        current.some((digest, index) => digest !== saved[index])
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    backup.close();
+  }
+}
+
 function writeRows(
   target: DatabaseSync,
   insert: string,

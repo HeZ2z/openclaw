@@ -34,6 +34,7 @@ import {
   inspectScopedMigrationSnapshot,
   inspectScopedMigrationTables,
   ScopedMigrationSnapshotUnsupportedError,
+  scopedTableRowsMatchFullBackup,
   type ScopedMigrationInspection,
 } from "../infra/sqlite-migration-scoped-snapshot.js";
 import { resolveSqliteInspectionSignal } from "../infra/sqlite-readonly-worker.js";
@@ -110,6 +111,18 @@ export function captureFreshDoctorMigrationTables(
     // reuse it rather than blocking credential retirement on the narrower scope.
     const full = getDoctorMigrationFullBackup(options.path);
     if (!full) {
+      throw error;
+    }
+    if (
+      full.verifyCurrentTables &&
+      !scopedTableRowsMatchFullBackup({
+        source: db,
+        backupPath: full.path,
+        tables: options.tables,
+      })
+    ) {
+      // The reused retry image predates a credential change. Keep the original
+      // rollback group and refuse retirement instead of losing current credentials.
       throw error;
     }
     const generation =
@@ -601,8 +614,11 @@ export async function backupDoctorSqliteDatabases(params: {
         );
       }
       if (targetPath !== scopedTargetFor(sourcePath)) {
-        // A retry keeps the original full image; fresh credential capture may reuse it.
-        registerDoctorMigrationFullBackup(sourcePath, { path: targetPath });
+        // A retry keeps the original full image, but it may predate credential changes.
+        registerDoctorMigrationFullBackup(sourcePath, {
+          path: targetPath,
+          verifyCurrentTables: true,
+        });
       }
       changes.push(`Reused pre-migration SQLite backup: ${targetPath}`);
       continue;

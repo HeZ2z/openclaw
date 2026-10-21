@@ -29,7 +29,12 @@ type DoctorMigrationBackup = (
   db: DatabaseSync,
   options: { path: string; env: NodeJS.ProcessEnv; tables: readonly string[] },
 ) => { capture: MigrationSource; backupPath: string };
-type DoctorMigrationFullBackup = { path: string; generation?: string };
+type DoctorMigrationFullBackup = {
+  path: string;
+  generation?: string;
+  /** Reused retry images must still cover the rows this capture would retire. */
+  verifyCurrentTables?: true;
+};
 const captures = new AsyncLocalStorage<{
   capture?: UpdateDoctorMigrationCapture;
   source?: MigrationSource;

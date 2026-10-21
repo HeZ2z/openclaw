@@ -4,11 +4,13 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { installLegacyStat4 } from "../infra/client-credential-stat4.test-support.js";
 import {
   listSessionSqliteMigrationManifestPaths,
   readSessionSqliteMigrationManifest,
 } from "../infra/session-sqlite-migration-manifest.js";
 import { inspectScopedMigrationSnapshot } from "../infra/sqlite-migration-scoped-snapshot.js";
+import { runWithDoctorMigrationBackup } from "../infra/update-doctor-migration-attribution.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { resolveSchemaMigrationBackupTables } from "../state/schema-migration-backup-scope.js";
 import * as backupArtifacts from "./doctor-migration-backup-artifacts.js";
@@ -16,6 +18,7 @@ import { restoreDoctorMigrationBackup } from "./doctor-migration-backup-restore.
 import {
   backupDoctorMigrationDatabases,
   backupDoctorSqliteDatabases,
+  captureFreshDoctorMigrationTables,
 } from "./doctor-migration-backup.js";
 import { inspectSessionSqliteRecovery } from "./doctor-session-sqlite-recovery-inventory.js";
 import { withDoctorSqliteMaintenanceLock } from "./doctor-sqlite-maintenance-lock.js";
@@ -53,6 +56,19 @@ function seedDatabase(databasePath: string) {
     INSERT INTO small VALUES ('before migration');
     INSERT INTO retained VALUES ('untouched', zeroblob(32768));
   `);
+}
+
+const stat4CredentialTables = ["credentials", "sqlite_stat1", "sqlite_stat4"] as const;
+
+function seedStat4CredentialScope(databasePath: string) {
+  {
+    using database = new DatabaseSync(databasePath);
+    database.exec(`
+      CREATE TABLE credentials (value TEXT NOT NULL) STRICT;
+      INSERT INTO credentials VALUES ('original');
+    `);
+  }
+  installLegacyStat4(databasePath);
 }
 
 function createFixture() {
@@ -382,5 +398,95 @@ describe("Doctor table-scoped migration backup selection", () => {
     await backup();
     expectFullBackup(fixture.agent, earlierBackups);
     expectFullBackup(fixture.shared, earlierBackups);
+  });
+
+  it("reuses an unchanged full image for fresh credential capture", async () => {
+    seedStat4CredentialScope(fixture.shared);
+    const maintenance = createOpenClawDatabaseMaintenanceScope({
+      schemaMaintenance: true,
+      assertOwnerCurrent: () => {},
+    });
+    try {
+      await maintenance.run(() =>
+        runWithDoctorMigrationBackup(captureFreshDoctorMigrationTables, async () => {
+          const params = {
+            env: fixture.env,
+            pendingDatabasePaths: [fixture.shared],
+            databasePaths: [fixture.shared],
+            migrationTables: new Map([
+              [fs.realpathSync.native(fixture.shared), stat4CredentialTables],
+            ]),
+            authority: { assertCurrent() {} },
+          };
+          const retained = await backupDoctorSqliteDatabases(params);
+          expect(retained.warnings).toEqual([]);
+          const fullPath = retained.snapshots?.[0]?.path;
+          expect(fullPath).toBeDefined();
+          using database = new DatabaseSync(fixture.shared);
+          database.exec("BEGIN IMMEDIATE");
+          try {
+            const capture = captureFreshDoctorMigrationTables(database, {
+              path: fixture.shared,
+              env: fixture.env,
+              tables: stat4CredentialTables,
+            });
+            expect(capture.backupPath).toBe(fullPath);
+            expect(capture.capture.generation).toMatch(/^[a-f0-9]{64}$/u);
+          } finally {
+            database.exec("ROLLBACK");
+          }
+        }),
+      );
+    } finally {
+      await maintenance.close();
+    }
+  });
+
+  it("refuses a reused full image after the credential rows change", async () => {
+    seedStat4CredentialScope(fixture.shared);
+    const maintenance = createOpenClawDatabaseMaintenanceScope({
+      schemaMaintenance: true,
+      assertOwnerCurrent: () => {},
+    });
+    try {
+      await maintenance.run(() =>
+        runWithDoctorMigrationBackup(captureFreshDoctorMigrationTables, async () => {
+          const params = {
+            env: fixture.env,
+            pendingDatabasePaths: [fixture.shared],
+            databasePaths: [fixture.shared],
+            migrationTables: new Map([
+              [fs.realpathSync.native(fixture.shared), stat4CredentialTables],
+            ]),
+            authority: { assertCurrent() {} },
+          };
+          const first = await backupDoctorSqliteDatabases(params);
+          expect(first.warnings).toEqual([]);
+          {
+            using database = new DatabaseSync(fixture.shared);
+            database.prepare("UPDATE credentials SET value = ?").run("rotated");
+          }
+          const reused = await backupDoctorSqliteDatabases(params);
+          expect(reused.changes).toContainEqual(
+            expect.stringContaining("Reused pre-migration SQLite backup"),
+          );
+          using database = new DatabaseSync(fixture.shared);
+          database.exec("BEGIN IMMEDIATE");
+          try {
+            expect(() =>
+              captureFreshDoctorMigrationTables(database, {
+                path: fixture.shared,
+                env: fixture.env,
+                tables: stat4CredentialTables,
+              }),
+            ).toThrow(/this SQLite runtime cannot recreate sqlite_stat4/u);
+          } finally {
+            database.exec("ROLLBACK");
+          }
+        }),
+      );
+    } finally {
+      await maintenance.close();
+    }
   });
 });
