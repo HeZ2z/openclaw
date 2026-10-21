@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { installLegacyStat4 } from "../infra/client-credential-stat4.test-support.js";
+import { installLegacyStat4, stat4CompiledIn } from "../infra/client-credential-stat4.test-support.js";
 import {
   listSessionSqliteMigrationManifestPaths,
   readSessionSqliteMigrationManifest,
@@ -400,7 +400,7 @@ describe("Doctor table-scoped migration backup selection", () => {
     expectFullBackup(fixture.shared, earlierBackups);
   });
 
-  it("reuses an unchanged full image for fresh credential capture", async () => {
+  it.skipIf(stat4CompiledIn)("reuses an unchanged full image for fresh credential capture", async () => {
     seedStat4CredentialScope(fixture.shared);
     const maintenance = createOpenClawDatabaseMaintenanceScope({
       schemaMaintenance: true,
@@ -418,10 +418,17 @@ describe("Doctor table-scoped migration backup selection", () => {
             ]),
             authority: { assertCurrent() {} },
           };
-          const retained = await backupDoctorSqliteDatabases(params);
-          expect(retained.warnings).toEqual([]);
-          const fullPath = retained.snapshots?.[0]?.path;
+          const first = await backupDoctorSqliteDatabases(params);
+          expect(first.warnings).toEqual([]);
+          const fullPath = first.snapshots?.[0]?.path;
           expect(fullPath).toBeDefined();
+          // The second invocation reuses the completed group, so capture must pass
+          // through the verifyCurrentTables branch before accepting the image.
+          const reused = await backupDoctorSqliteDatabases(params);
+          expect(reused.warnings).toEqual([]);
+          expect(reused.changes).toContainEqual(
+            expect.stringContaining("Reused pre-migration SQLite backup"),
+          );
           using database = new DatabaseSync(fixture.shared);
           database.exec("BEGIN IMMEDIATE");
           try {
@@ -442,7 +449,7 @@ describe("Doctor table-scoped migration backup selection", () => {
     }
   });
 
-  it("refuses a reused full image after the credential rows change", async () => {
+  it.skipIf(stat4CompiledIn)("refuses a reused full image after the credential rows change", async () => {
     seedStat4CredentialScope(fixture.shared);
     const maintenance = createOpenClawDatabaseMaintenanceScope({
       schemaMaintenance: true,
