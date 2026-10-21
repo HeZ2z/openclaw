@@ -4,7 +4,10 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { installLegacyStat4, stat4CompiledIn } from "../infra/client-credential-stat4.test-support.js";
+import {
+  installLegacyStat4,
+  stat4CompiledIn,
+} from "../infra/client-credential-stat4.test-support.js";
 import {
   listSessionSqliteMigrationManifestPaths,
   readSessionSqliteMigrationManifest,
@@ -400,100 +403,106 @@ describe("Doctor table-scoped migration backup selection", () => {
     expectFullBackup(fixture.shared, earlierBackups);
   });
 
-  it.skipIf(stat4CompiledIn)("reuses an unchanged full image for fresh credential capture", async () => {
-    seedStat4CredentialScope(fixture.shared);
-    const maintenance = createOpenClawDatabaseMaintenanceScope({
-      schemaMaintenance: true,
-      assertOwnerCurrent: () => {},
-    });
-    try {
-      await maintenance.run(() =>
-        runWithDoctorMigrationBackup(captureFreshDoctorMigrationTables, async () => {
-          const params = {
-            env: fixture.env,
-            pendingDatabasePaths: [fixture.shared],
-            databasePaths: [fixture.shared],
-            migrationTables: new Map([
-              [fs.realpathSync.native(fixture.shared), stat4CredentialTables],
-            ]),
-            authority: { assertCurrent() {} },
-          };
-          const first = await backupDoctorSqliteDatabases(params);
-          expect(first.warnings).toEqual([]);
-          const fullPath = first.snapshots?.[0]?.path;
-          expect(fullPath).toBeDefined();
-          // The second invocation reuses the completed group, so capture must pass
-          // through the verifyCurrentTables branch before accepting the image.
-          const reused = await backupDoctorSqliteDatabases(params);
-          expect(reused.warnings).toEqual([]);
-          expect(reused.changes).toContainEqual(
-            expect.stringContaining("Reused pre-migration SQLite backup"),
-          );
-          using database = new DatabaseSync(fixture.shared);
-          database.exec("BEGIN IMMEDIATE");
-          try {
-            const capture = captureFreshDoctorMigrationTables(database, {
-              path: fixture.shared,
+  it.skipIf(stat4CompiledIn)(
+    "reuses an unchanged full image for fresh credential capture",
+    async () => {
+      seedStat4CredentialScope(fixture.shared);
+      const maintenance = createOpenClawDatabaseMaintenanceScope({
+        schemaMaintenance: true,
+        assertOwnerCurrent: () => {},
+      });
+      try {
+        await maintenance.run(() =>
+          runWithDoctorMigrationBackup(captureFreshDoctorMigrationTables, async () => {
+            const params = {
               env: fixture.env,
-              tables: stat4CredentialTables,
-            });
-            expect(capture.backupPath).toBe(fullPath);
-            expect(capture.capture.generation).toMatch(/^[a-f0-9]{64}$/u);
-          } finally {
-            database.exec("ROLLBACK");
-          }
-        }),
-      );
-    } finally {
-      await maintenance.close();
-    }
-  });
-
-  it.skipIf(stat4CompiledIn)("refuses a reused full image after the credential rows change", async () => {
-    seedStat4CredentialScope(fixture.shared);
-    const maintenance = createOpenClawDatabaseMaintenanceScope({
-      schemaMaintenance: true,
-      assertOwnerCurrent: () => {},
-    });
-    try {
-      await maintenance.run(() =>
-        runWithDoctorMigrationBackup(captureFreshDoctorMigrationTables, async () => {
-          const params = {
-            env: fixture.env,
-            pendingDatabasePaths: [fixture.shared],
-            databasePaths: [fixture.shared],
-            migrationTables: new Map([
-              [fs.realpathSync.native(fixture.shared), stat4CredentialTables],
-            ]),
-            authority: { assertCurrent() {} },
-          };
-          const first = await backupDoctorSqliteDatabases(params);
-          expect(first.warnings).toEqual([]);
-          {
+              pendingDatabasePaths: [fixture.shared],
+              databasePaths: [fixture.shared],
+              migrationTables: new Map([
+                [fs.realpathSync.native(fixture.shared), stat4CredentialTables],
+              ]),
+              authority: { assertCurrent() {} },
+            };
+            const first = await backupDoctorSqliteDatabases(params);
+            expect(first.warnings).toEqual([]);
+            const fullPath = first.snapshots?.[0]?.path;
+            expect(fullPath).toBeDefined();
+            // The second invocation reuses the completed group, so capture must pass
+            // through the verifyCurrentTables branch before accepting the image.
+            const reused = await backupDoctorSqliteDatabases(params);
+            expect(reused.warnings).toEqual([]);
+            expect(reused.changes).toContainEqual(
+              expect.stringContaining("Reused pre-migration SQLite backup"),
+            );
             using database = new DatabaseSync(fixture.shared);
-            database.prepare("UPDATE credentials SET value = ?").run("rotated");
-          }
-          const reused = await backupDoctorSqliteDatabases(params);
-          expect(reused.changes).toContainEqual(
-            expect.stringContaining("Reused pre-migration SQLite backup"),
-          );
-          using database = new DatabaseSync(fixture.shared);
-          database.exec("BEGIN IMMEDIATE");
-          try {
-            expect(() =>
-              captureFreshDoctorMigrationTables(database, {
+            database.exec("BEGIN IMMEDIATE");
+            try {
+              const capture = captureFreshDoctorMigrationTables(database, {
                 path: fixture.shared,
                 env: fixture.env,
                 tables: stat4CredentialTables,
-              }),
-            ).toThrow(/this SQLite runtime cannot recreate sqlite_stat4/u);
-          } finally {
-            database.exec("ROLLBACK");
-          }
-        }),
-      );
-    } finally {
-      await maintenance.close();
-    }
-  });
+              });
+              expect(capture.backupPath).toBe(fullPath);
+              expect(capture.capture.generation).toMatch(/^[a-f0-9]{64}$/u);
+            } finally {
+              database.exec("ROLLBACK");
+            }
+          }),
+        );
+      } finally {
+        await maintenance.close();
+      }
+    },
+  );
+
+  it.skipIf(stat4CompiledIn)(
+    "refuses a reused full image after the credential rows change",
+    async () => {
+      seedStat4CredentialScope(fixture.shared);
+      const maintenance = createOpenClawDatabaseMaintenanceScope({
+        schemaMaintenance: true,
+        assertOwnerCurrent: () => {},
+      });
+      try {
+        await maintenance.run(() =>
+          runWithDoctorMigrationBackup(captureFreshDoctorMigrationTables, async () => {
+            const params = {
+              env: fixture.env,
+              pendingDatabasePaths: [fixture.shared],
+              databasePaths: [fixture.shared],
+              migrationTables: new Map([
+                [fs.realpathSync.native(fixture.shared), stat4CredentialTables],
+              ]),
+              authority: { assertCurrent() {} },
+            };
+            const first = await backupDoctorSqliteDatabases(params);
+            expect(first.warnings).toEqual([]);
+            {
+              using database = new DatabaseSync(fixture.shared);
+              database.prepare("UPDATE credentials SET value = ?").run("rotated");
+            }
+            const reused = await backupDoctorSqliteDatabases(params);
+            expect(reused.changes).toContainEqual(
+              expect.stringContaining("Reused pre-migration SQLite backup"),
+            );
+            using database = new DatabaseSync(fixture.shared);
+            database.exec("BEGIN IMMEDIATE");
+            try {
+              expect(() =>
+                captureFreshDoctorMigrationTables(database, {
+                  path: fixture.shared,
+                  env: fixture.env,
+                  tables: stat4CredentialTables,
+                }),
+              ).toThrow(/this SQLite runtime cannot recreate sqlite_stat4/u);
+            } finally {
+              database.exec("ROLLBACK");
+            }
+          }),
+        );
+      } finally {
+        await maintenance.close();
+      }
+    },
+  );
 });
