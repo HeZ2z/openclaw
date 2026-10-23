@@ -152,7 +152,6 @@ export async function runEmbeddedAgentViaCliBackendIfEligible(
       agentId: params.agentId,
       storePath,
       trigger: params.trigger,
-      heartbeatEventQueueSessionKey: params.heartbeatEventQueueSessionKey,
       sessionFile,
       workspaceDir: params.workspaceDir,
       agentDir: params.agentDir,

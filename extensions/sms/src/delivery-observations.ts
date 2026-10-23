@@ -81,14 +81,6 @@ function fingerprintObservation(params: {
   );
 }
 
-function deliveryRecordKey(params: {
-  accountId: string;
-  accountSidHash: string;
-  messageSid: string;
-}): string {
-  return sha256Hex(`${params.accountId}\n${params.accountSidHash}\n${params.messageSid}`);
-}
-
 function openDeliveryStore(): PluginStateKeyedStore<SmsDeliveryRecord> {
   const runtime = getSmsRuntime();
   // This is bounded recent operator state, not an audit ledger. At capacity,
@@ -107,36 +99,6 @@ function openDeliveryStore(): PluginStateKeyedStore<SmsDeliveryRecord> {
 
 export function isTwilioDeliveryStatusForm(form: Record<string, string>): boolean {
   return Boolean(resolveDeliveryStatus(form));
-}
-
-function parseSmsDeliveryObservation(
-  form: Record<string, string>,
-  nowMs = Date.now(),
-): { messageSid: string; observation: SmsDeliveryObservation } | null {
-  const messageSid = resolveTwilioMessageSid(form);
-  const status = resolveDeliveryStatus(form);
-  if (!messageSid || !status) {
-    return null;
-  }
-  const errorCode = firstTrimmed(form, "ErrorCode");
-  const rawDlrDoneDate = firstTrimmed(form, "RawDlrDoneDate");
-  return {
-    messageSid,
-    observation: {
-      source: "callback",
-      fingerprint: fingerprintObservation({
-        source: "callback",
-        messageSid,
-        status,
-        ...(errorCode ? { errorCode } : {}),
-        ...(rawDlrDoneDate ? { rawDlrDoneDate } : {}),
-      }),
-      status,
-      observedAt: nowMs,
-      ...(errorCode ? { errorCode } : {}),
-      ...(rawDlrDoneDate ? { rawDlrDoneDate } : {}),
-    },
-  };
 }
 
 function reduceDeliveryStatus(
@@ -184,36 +146,6 @@ function reduceDeliveryStatus(
   };
 }
 
-function mergeSmsDeliveryObservation(params: {
-  accountId: string;
-  accountSidHash: string;
-  messageSid: string;
-  current: SmsDeliveryRecord | undefined;
-  observation: SmsDeliveryObservation;
-}): SmsDeliveryRecord | undefined {
-  if (
-    params.current?.observations.some(
-      (existing) => existing.fingerprint === params.observation.fingerprint,
-    )
-  ) {
-    return undefined;
-  }
-  const reduced = reduceDeliveryStatus(params.current, params.observation);
-  return {
-    accountId: params.accountId,
-    accountSidHash: params.accountSidHash,
-    messageSid: params.messageSid,
-    status: reduced.status,
-    firstObservedAt: params.current?.firstObservedAt ?? params.observation.observedAt,
-    lastObservedAt: params.observation.observedAt,
-    ...(reduced.errorCode ? { errorCode: reduced.errorCode } : {}),
-    ...(reduced.conflict ? { conflict: true } : {}),
-    observations: [...(params.current?.observations ?? []), params.observation].slice(
-      -DELIVERY_MAX_OBSERVATIONS_PER_MESSAGE,
-    ),
-  };
-}
-
 async function recordSmsDeliveryObservation(params: {
   account: ResolvedSmsAccount;
   messageSid: string;
@@ -225,20 +157,34 @@ async function recordSmsDeliveryObservation(params: {
   }
   const accountId = params.account.accountId;
   const accountSidHash = sha256Hex(params.account.accountSid);
-  const key = deliveryRecordKey({
-    accountId,
-    accountSidHash,
-    messageSid: params.messageSid,
-  });
+  const key = sha256Hex(`${accountId}\n${accountSidHash}\n${params.messageSid}`);
   let observed = await params.store.observe(key);
-  while (true) {
-    const next = mergeSmsDeliveryObservation({
+  function mergeSmsDeliveryObservation(): SmsDeliveryRecord | undefined {
+    const messageSid = params.messageSid;
+    const current = observed.value;
+    const observation = params.observation;
+    if (
+      current?.observations.some((existing) => existing.fingerprint === observation.fingerprint)
+    ) {
+      return undefined;
+    }
+    const reduced = reduceDeliveryStatus(current, observation);
+    return {
       accountId,
       accountSidHash,
-      messageSid: params.messageSid,
-      current: observed.value,
-      observation: params.observation,
-    });
+      messageSid,
+      status: reduced.status,
+      firstObservedAt: current?.firstObservedAt ?? observation.observedAt,
+      lastObservedAt: observation.observedAt,
+      ...(reduced.errorCode ? { errorCode: reduced.errorCode } : {}),
+      ...(reduced.conflict ? { conflict: true } : {}),
+      observations: [...(current?.observations ?? []), observation].slice(
+        -DELIVERY_MAX_OBSERVATIONS_PER_MESSAGE,
+      ),
+    };
+  }
+  while (true) {
+    const next = mergeSmsDeliveryObservation();
     const result = await params.store.compareAndApply(
       key,
       observed.comparison,
@@ -263,16 +209,29 @@ export function createSmsDeliveryRecorder(
 ) {
   return {
     async record({ account, form }: { account: ResolvedSmsAccount; form: Record<string, string> }) {
-      const parsed = parseSmsDeliveryObservation(form);
-      if (!parsed) {
+      const nowMs = Date.now();
+      const messageSid = resolveTwilioMessageSid(form);
+      const status = resolveDeliveryStatus(form);
+      if (!messageSid || !status) {
         throw new Error("Invalid Twilio delivery status callback.");
       }
-      return await recordSmsDeliveryObservation({
-        account,
-        messageSid: parsed.messageSid,
-        observation: parsed.observation,
-        store,
-      });
+      const errorCode = firstTrimmed(form, "ErrorCode");
+      const rawDlrDoneDate = firstTrimmed(form, "RawDlrDoneDate");
+      const observation: SmsDeliveryObservation = {
+        source: "callback",
+        fingerprint: fingerprintObservation({
+          source: "callback",
+          messageSid,
+          status,
+          ...(errorCode ? { errorCode } : {}),
+          ...(rawDlrDoneDate ? { rawDlrDoneDate } : {}),
+        }),
+        status,
+        observedAt: nowMs,
+        ...(errorCode ? { errorCode } : {}),
+        ...(rawDlrDoneDate ? { rawDlrDoneDate } : {}),
+      };
+      return await recordSmsDeliveryObservation({ account, messageSid, observation, store });
     },
   };
 }
