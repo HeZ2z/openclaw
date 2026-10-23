@@ -147,8 +147,8 @@ async function fixture(
   };
 }
 
-it("persists a complete pure Claude CLI turn in SQLite before resolving", async () => {
-  const { context, events } = await fixture();
+it("persists a complete pure Claude CLI turn by default before resolving", async () => {
+  const { context, events } = await fixture({ defaults: true });
   await expect(runCliAgent(context.params)).resolves.toMatchObject({
     payloads: [{ text: "fixture reply" }],
   });
@@ -245,14 +245,6 @@ it("leaves trajectory disabled while still executing the CLI", async () => {
     payloads: [{ text: "fixture reply" }],
   });
   expect(await events()).toEqual([]);
-});
-
-it("records by default when OPENCLAW_TRAJECTORY is unset", async () => {
-  const { context, events } = await fixture({ defaults: true });
-  await expect(runCliAgent(context.params)).resolves.toMatchObject({
-    payloads: [{ text: "fixture reply" }],
-  });
-  expect((await events()).map((event) => event.type)).toContain("session.ended");
 });
 
 it("honors the disableTrajectory opt-out while still executing the CLI", async () => {

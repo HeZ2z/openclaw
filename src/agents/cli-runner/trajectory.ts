@@ -145,9 +145,11 @@ function recordCliSessionEnded(params: {
   });
 }
 
-async function withCliRunTrajectory(
+/** Settles a prepared CLI run and flushes its trajectory after the terminal outcome. */
+export async function settlePreparedCliRunWithTrajectory(
   context: PreparedCliRunContext,
-  run: () => Promise<EmbeddedAgentRunResult>,
+  diagnosticLifecycle: ClaudeCliRunDiagnosticLifecycle | undefined,
+  run: PreparedCliRun,
 ): Promise<EmbeddedAgentRunResult> {
   let recorder: CliTrajectoryRecorder | null = null;
   try {
@@ -163,7 +165,7 @@ async function withCliRunTrajectory(
   let failed = false;
   let runError: unknown;
   try {
-    result = await run();
+    result = await settlePreparedCliRun({ context, diagnosticLifecycle, run });
     return result;
   } catch (error) {
     failed = true;
@@ -193,19 +195,4 @@ async function withCliRunTrajectory(
       delete context.trajectoryRecorder;
     }
   }
-}
-
-/** Settles a prepared CLI run and flushes its trajectory after the terminal outcome. */
-export async function settlePreparedCliRunWithTrajectory(
-  context: PreparedCliRunContext,
-  diagnosticLifecycle: ClaudeCliRunDiagnosticLifecycle | undefined,
-  runPrepared: PreparedCliRun,
-): Promise<EmbeddedAgentRunResult> {
-  return await withCliRunTrajectory(context, () =>
-    settlePreparedCliRun({
-      context,
-      diagnosticLifecycle,
-      run: runPrepared,
-    }),
-  );
 }
