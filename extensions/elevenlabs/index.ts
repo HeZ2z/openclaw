@@ -58,7 +58,11 @@ export default definePluginEntry({
         });
         for (const key of ["no_verbatim", "tag_audio_events", "diarize"]) {
           const value = req.query?.[key];
-          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+          if (
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "boolean"
+          ) {
             form.set(key, String(value));
           }
         }
