@@ -134,7 +134,20 @@ async function fixture(
         }
         throw new Error(stderr || `Fixture exited with code ${code}`);
       }
-      yield { type: "result", subtype: "success", result: stdout };
+      yield {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: stdout }],
+          usage: { input_tokens: 12, output_tokens: 5 },
+        },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        result: stdout,
+        usage: { input_tokens: 12, output_tokens: 534 },
+      };
     } finally {
       abortSignal?.removeEventListener("abort", abortChild);
     }
@@ -166,6 +179,7 @@ it("persists a complete pure Claude CLI turn by default before resolving", async
   expect(recorded.find((event) => event.type === "model.completed")?.data).toMatchObject({
     assistantTexts: ["fixture reply"],
     stopReason: "completed",
+    usage: { input: 12, output: 534 },
   });
   expect(recorded.at(-1)?.data).toMatchObject({ status: "success" });
   expect(recorded.every((event) => event.sessionId === "openclaw-session")).toBe(true);

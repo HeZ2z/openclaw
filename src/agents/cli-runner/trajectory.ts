@@ -40,7 +40,7 @@ export function recordCliModelCompleted(
 ): void {
   recordCliTrajectoryEvent(recorder, "model.completed", {
     assistantTexts: output.text ? [output.text] : [],
-    usage: output.usage,
+    usage: output.diagnosticUsage ?? output.usage,
     finalPromptText: output.finalPromptText,
     stopReason: output.terminalInterruption?.reason ?? (output.yielded ? "end_turn" : "completed"),
   });
