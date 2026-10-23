@@ -21,7 +21,7 @@ import {
 } from "../../infra/update-run-ledger.js";
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import { defaultRuntime } from "../../runtime.js";
-import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
+import { classifyUpdateOutcome } from "../../shared/update-outcome-classification.js";
 import { writeOpenClawPackageFixture } from "./update-cli-package.test-support.js";
 import { registerUnverifiedDefinitionRecoveryTests } from "./update-command-definition-recovery.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
@@ -58,7 +58,12 @@ const mocks = vi.hoisted(() => ({
   readService: vi.fn<typeof import("../../daemon/service.js").readGatewayServiceState>(),
   execSchtasks: vi.fn<typeof import("../../daemon/schtasks-exec.js").execSchtasks>(),
 }));
-vi.mock("../../daemon/schtasks-exec.js", () => ({ execSchtasks: mocks.execSchtasks }));
+// mock-isolation: Recovery tests mutate only their synthetic Windows task, never host services.
+vi.mock("../../daemon/schtasks-exec.js", () => ({
+  execSchtasks: mocks.execSchtasks,
+  execScheduledTaskEnabledChange: (taskName: string, enabled: boolean) =>
+    mocks.execSchtasks(["/Change", "/TN", taskName, enabled ? "/ENABLE" : "/DISABLE"]),
+}));
 vi.mock("../../infra/update-repair-agent.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/update-repair-agent.js")>()),
   runUpdateRepairLoop: mocks.repair,
