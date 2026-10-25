@@ -57,8 +57,10 @@ export function isMattermostSenderAllowed(params: {
   return match.allowed;
 }
 
-function mapMattermostChannelTypeToChatType(channelType?: string | null): ChatType {
-  const normalized = channelType?.trim().toUpperCase();
+export function resolveMattermostTrustedChatKind(params: {
+  channelType?: string | null;
+}): ChatType {
+  const normalized = params.channelType?.trim().toUpperCase();
   if (!normalized) {
     return "direct";
   }
@@ -69,16 +71,6 @@ function mapMattermostChannelTypeToChatType(channelType?: string | null): ChatTy
     return "group";
   }
   return "channel";
-}
-
-export function resolveMattermostTrustedChatKind(params: {
-  channelType?: string | null;
-  fallback?: ChatType;
-}): ChatType {
-  const channelType = params.channelType?.trim();
-  return channelType
-    ? mapMattermostChannelTypeToChatType(channelType)
-    : (params.fallback ?? "direct");
 }
 
 type MattermostCommandDenyReason =
@@ -250,7 +242,7 @@ export async function authorizeMattermostCommandInvocation(params: {
     };
   }
 
-  const kind = mapMattermostChannelTypeToChatType(channelInfo.type);
+  const kind = resolveMattermostTrustedChatKind({ channelType: channelInfo.type });
   const chatType = kind;
   const channelName = channelInfo.name ?? "";
   const channelDisplay = channelInfo.display_name ?? channelName;

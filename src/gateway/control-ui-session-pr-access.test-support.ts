@@ -74,7 +74,6 @@ export async function createFixture(
   const profile = ensureProfileForEmail(readerEmail);
   const other = ensureProfileForEmail(`publication-owner-${fixtureId}@example.test`);
   const seeded = new Set<string>();
-  const sessionId = `${sessionKey}-${fixtureId}`;
   const readerRole = { agents: ["main"], sessions: { others: "view" as const }, scopes: [scope] };
   const cfg: OpenClawConfig = {
     gateway: { roles: { default: "reader", definitions: { reader: readerRole } } },
@@ -123,7 +122,7 @@ export async function createFixture(
     connections.clients.add(client);
     return { client, socket, access };
   };
-  const load = vi.fn<Load>(async () => snapshot);
+  const load = vi.fn<SessionPrLoader>(async () => snapshot);
   if (!useDefaultLoader) {
     spyOnSessionPrLoader(load);
   }
@@ -136,6 +135,7 @@ export async function createFixture(
       const client = connections.clients.getByConnectionId(connId);
       return client
         ? createControlUiSessionPrRead({
+            allowOwnImportedPullRequest: true,
             client,
             ...session,
             getRuntimeConfig,
@@ -160,8 +160,9 @@ export async function createFixture(
     clock,
     addReader,
     profile,
+    readerEmail,
     other,
-    sessionId,
+    sessionId: `${sessionKey}-${fixtureId}`,
     cfg,
     seed,
     load,
