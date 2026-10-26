@@ -2,7 +2,6 @@ import { expectPairingReplyText } from "openclaw/plugin-sdk/channel-test-helpers
 import { buildPairingReply } from "openclaw/plugin-sdk/conversation-runtime";
 import type * as SessionTranscriptRuntime from "openclaw/plugin-sdk/session-transcript-runtime";
 import { expect, it, vi } from "vitest";
-import { MATTERMOST_PAIRING_QUEUE_FULL_TEXT } from "./monitor-auth.js";
 
 const mocks = vi.hoisted(() => ({
   authorize: vi.fn(),
@@ -289,7 +288,9 @@ it.each([
     });
     expect(buildReply).toHaveBeenCalledOnce();
   } else {
-    expect(response).toEqual({ ephemeral_text: MATTERMOST_PAIRING_QUEUE_FULL_TEXT });
+    expect(response?.ephemeral_text).toContain("DM pairing is full");
+    expect(response?.ephemeral_text).toContain("no pairing request was saved");
+    expect(response?.ephemeral_text).not.toContain("pairing approve");
     expect(buildReply).not.toHaveBeenCalled();
   }
   expect(mocks.dispatch).not.toHaveBeenCalled();

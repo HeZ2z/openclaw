@@ -80,18 +80,15 @@ export function createMattermostModelPickerInteractionHandler(
           id: params.payload.user_id,
           meta: { name: params.userName },
         });
-        // A full pending queue returns an empty code and stores no request. Deny with
-        // recovery guidance instead of an approve command that cannot succeed.
-        if (code) {
-          return {
-            ephemeral_text: core.channel.pairing.buildPairingReply({
-              channel: "mattermost",
-              idLine: `Your Mattermost user id: ${params.payload.user_id}`,
-              code,
-            }),
-          };
-        }
-        return { ephemeral_text: MATTERMOST_PAIRING_QUEUE_FULL_TEXT };
+        return {
+          ephemeral_text: code
+            ? core.channel.pairing.buildPairingReply({
+                channel: "mattermost",
+                idLine: `Your Mattermost user id: ${params.payload.user_id}`,
+                code,
+              })
+            : MATTERMOST_PAIRING_QUEUE_FULL_TEXT,
+        };
       }
       const denyText =
         auth.denyReason === "unknown-channel"
