@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
   createPluginRuntimeMock,
   expectPairingReplyText,
@@ -342,6 +343,7 @@ describe("slash-http", () => {
     });
 
     expect(response.statusCode).toBe(200);
+    assert.ok(response.body, "Expected JSON response body");
     const { text } = JSON.parse(response.body) as { text: string };
     if (code) {
       expectPairingReplyText(text, {
