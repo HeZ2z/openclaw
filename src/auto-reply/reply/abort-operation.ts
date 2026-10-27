@@ -121,8 +121,6 @@ export function captureChannelSessionStop(params: {
   sessionId?: string;
   storePath: string;
   agentId?: string;
-  aliases?: readonly (string | undefined)[];
-  includeQueued?: boolean;
   resolveGatewayContext?: GatewayContextResolver;
 }): ChannelStopCapture {
   const key = normalizeOptionalString(params.key);
@@ -145,13 +143,11 @@ export function captureChannelSessionStop(params: {
             sessionKey: key,
             incarnation: params.sessionId,
             agentId: params.agentId,
-            aliases: params.aliases,
           }),
         ]
       : [],
     inputs: candidates.flatMap((candidate) => candidate.capture.inputs),
     operations: candidates.flatMap((candidate) => candidate.capture.operations),
-    includeQueued: params.includeQueued,
     resolveGatewayContext: params.resolveGatewayContext,
   });
   return captureChannelStopResources(controller, params.sessionId, {
@@ -268,7 +264,6 @@ function cancelSkillExperienceReviewForStoppedCapture(capture: ChannelStopCaptur
 export function abortSessionRunTargetWithOutcome(params: {
   capture: ChannelStopCapture | (() => ChannelStopCapture);
   assertCurrent?: () => void;
-  afterQueued?: () => void;
   hookContext: SessionStopHookContext;
   messageIdentity?: unknown;
   recordAbortTarget?: SessionStopRequest["recordAbortTarget"];
@@ -333,7 +328,6 @@ export function abortSessionRunTargetWithOutcome(params: {
       // The Stop kernel calls afterQueued only after revalidating the captured Stop's live
       // target, so review cancellation cannot outrun a rejected foreground cancellation.
       cancelSkillExperienceReviewForStoppedCapture(capture);
-      params.afterQueued?.();
       for (const retirement of capture.idleMcpRetirements) {
         trackRetirement(retirement.sessionId, () =>
           retirement.retire(() => params.assertCurrent?.()),

@@ -7,6 +7,7 @@ import {
   createCronCreatorAuthorityCapability,
   runWithCronCreatorAuthorityCapability,
 } from "../../agents/cron-creator-authority-context.js";
+import { emitInternalRunUsageDiagnostic } from "../../agents/internal-run-usage.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { getRuntimeConfig } from "../../config/config.js";
@@ -48,7 +49,7 @@ export async function prepareSkillExperienceReviewCandidate(
 ): Promise<ExperienceReviewCandidate | undefined> {
   if (
     isIncognitoSessionKey(candidate.source.sessionKey) ||
-    resolveSkillWorkshopConfig(config).autonomous.mode !== "auto"
+    resolveSkillWorkshopConfig(config).autonomous.mode === "off"
   ) {
     return undefined;
   }
@@ -231,7 +232,7 @@ async function runSkillExperienceReviewInner(
     if (sourceLifetime.entry && !sourceLifetime.entry.isCurrent()) {
       throw new SessionTranscriptReadFenceError("Session review authority changed");
     }
-    if (resolveSkillWorkshopConfig(getRuntimeConfig()).autonomous.mode !== "auto") {
+    if (resolveSkillWorkshopConfig(getRuntimeConfig()).autonomous.mode === "off") {
       throw new Error("Skill Workshop was turned off during review.");
     }
   };
@@ -318,7 +319,10 @@ async function runSkillExperienceReviewInner(
       permissionMode: sourceEntry.permissionMode ?? foregroundPromptContext.permissionMode,
       config,
       abortSignal,
-      prompt: buildSkillExperienceReviewPrompt(candidate),
+      prompt: buildSkillExperienceReviewPrompt({
+        ...candidate,
+        propose: resolveSkillWorkshopConfig(config).autonomous.mode === "propose",
+      }),
       provider: candidate.ctx.modelProviderId,
       model: candidate.ctx.modelId,
       ...(candidate.ctx.authProfileId
@@ -330,9 +334,19 @@ async function runSkillExperienceReviewInner(
     });
   let reviewFailure: unknown;
   try {
-    assertSkillReviewRunSucceeded(
-      capability ? await runWithCronCreatorAuthorityCapability(capability, run) : await run(),
-    );
+    const result = capability
+      ? await runWithCronCreatorAuthorityCapability(capability, run)
+      : await run();
+    emitInternalRunUsageDiagnostic(result, {
+      config,
+      agentId,
+      agentDir: foregroundPromptContext.agentDir,
+      sessionId: reviewSession.sessionId,
+      sessionKey: reviewSession.sessionKey,
+      provider: candidate.ctx.modelProviderId,
+      model: candidate.ctx.modelId,
+    });
+    assertSkillReviewRunSucceeded(result);
   } catch (error) {
     reviewFailure = error;
   }
