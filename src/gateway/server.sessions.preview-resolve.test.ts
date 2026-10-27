@@ -325,14 +325,14 @@ test("Talk model-context stops when the byte budget caps the recovery page", asy
       content: `${String(index)}${"t".repeat(4096)}`,
     })),
   ]);
-  const opens: number[] = [];
+  const opens: (number | undefined)[] = [];
   const managers: SessionManager[] = [];
   const openBoundedAsync = SessionManager.openBoundedAsync.bind(SessionManager);
   const spy = vi
     .spyOn(SessionManager, "openBoundedAsync")
     .mockImplementation(async (target, options) => {
       const manager = await openBoundedAsync(target, options);
-      opens.push(options.maxEvents);
+      opens.push("maxEvents" in options ? options.maxEvents : undefined);
       managers.push(manager);
       return manager;
     });
