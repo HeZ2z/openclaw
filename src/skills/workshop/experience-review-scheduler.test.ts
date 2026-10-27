@@ -1,3 +1,4 @@
+import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
@@ -6,11 +7,11 @@ import {
   type ExperienceReviewCandidate,
   type SkillExperienceReviewParams,
 } from "./experience-review-scheduler.js";
+import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
-// mock-isolation: Keep scheduler failures out of real log sinks.
-vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ debug: vi.fn(), warn: vi.fn() }),
-}));
+const log = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
+// mock-isolation: Capture severity without initializing real log sinks.
+vi.mock("../../logging/subsystem.js", () => ({ createSubsystemLogger: () => log }));
 const source = {
   agentId: "main",
   sessionId: "session-1",
@@ -26,6 +27,8 @@ beforeEach(() => {
   now = 1_000;
   vi.spyOn(Date, "now").mockImplementation(() => now);
   vi.clearAllMocks();
+  log.debug.mockReset();
+  log.warn.mockReset();
   runReview.mockReset();
   scheduler = createSkillExperienceReviewScheduler({ isSystemActive: () => false, runReview });
 });
@@ -137,6 +140,7 @@ it.each(["reported", "messages"])("accumulates %s iterations despite skill use",
       ctx: expect.objectContaining({ runId: kind === "reported" ? "run-1" : "run-0" }),
       usedSkills,
     }),
+    expect.any(AbortSignal),
   );
   countedTurn(9, 0);
 });

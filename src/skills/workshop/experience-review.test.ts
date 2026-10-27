@@ -177,7 +177,7 @@ it.each(["succeeded", "failed"] as const)(
   "keeps an independent cleanup failure when the model %s and the review was stopped",
   async (modelOutcome) => {
     const stop = new AbortController();
-    mocks.runSkillWorkshopReview.mockImplementation(async () => {
+    mocks.runEmbeddedAgent.mockImplementation(async () => {
       if (modelOutcome === "failed") {
         throw new Error("Skill review model run aborted.");
       }
