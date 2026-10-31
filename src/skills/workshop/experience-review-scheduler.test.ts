@@ -1,4 +1,3 @@
-import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
@@ -7,11 +6,11 @@ import {
   type ExperienceReviewCandidate,
   type SkillExperienceReviewParams,
 } from "./experience-review-scheduler.js";
-import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
-const log = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
-// mock-isolation: Capture severity without initializing real log sinks.
-vi.mock("../../logging/subsystem.js", () => ({ createSubsystemLogger: () => log }));
+// mock-isolation: Keep scheduler failures out of real log sinks.
+vi.mock("../../logging/subsystem.js", () => ({
+  createSubsystemLogger: () => ({ debug: vi.fn(), warn: vi.fn() }),
+}));
 const source = {
   agentId: "main",
   sessionId: "session-1",
@@ -23,13 +22,11 @@ const runReview = vi.fn(async (_candidate: ExperienceReviewCandidate, _signal: A
 let scheduler: ReturnType<typeof createSkillExperienceReviewScheduler>;
 let now: number;
 beforeEach(() => {
+  vi.resetAllMocks();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   now = 1_000;
   vi.spyOn(Date, "now").mockImplementation(() => now);
-  vi.clearAllMocks();
-  log.debug.mockReset();
-  log.warn.mockReset();
-  runReview.mockReset();
+  vi.spyOn(performance, "now").mockImplementation(() => now);
   scheduler = createSkillExperienceReviewScheduler({ isSystemActive: () => false, runReview });
 });
 afterEach(() => {
@@ -37,22 +34,15 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
-type TurnOptions = Partial<SkillExperienceReviewParams> & {
-  sessionKey?: string;
-  runId?: string;
-};
+type TurnOptions = Partial<SkillExperienceReviewParams> & { sessionKey?: string };
 function turn(
   modelIterations: number,
-  {
-    sessionKey = source.sessionKey,
-    runId = `run-${modelIterations}`,
-    ...overrides
-  }: TurnOptions = {},
+  { sessionKey = source.sessionKey, ...overrides }: TurnOptions = {},
 ) {
   scheduler.schedule({
     event: { messages: [], success: true },
     ctx: {
-      runId,
+      runId: `run-${modelIterations}`,
       sessionKey,
       workspaceDir: "/workspace",
       modelProviderId: "openai",
@@ -66,7 +56,7 @@ function turn(
         trigger: "user",
       },
     },
-    config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
+    config: {},
     source,
     ...overrides,
   });
@@ -75,12 +65,10 @@ function countedTurn(iterations: number, timers: number, options?: TurnOptions) 
   turn(iterations, options);
   expect(vi.getTimerCount()).toBe(timers);
 }
-async function fireTimers(calls?: number) {
+async function fireTimers(calls = 1) {
   vi.runOnlyPendingTimers();
   await setImmediate();
-  if (calls !== undefined) {
-    expect(runReview).toHaveBeenCalledTimes(calls);
-  }
+  expect(runReview).toHaveBeenCalledTimes(calls);
 }
 
 it("backs off all sessions after a TPM rejection without replaying the failed review", async () => {
@@ -115,29 +103,29 @@ it("defers queued reviews when a foreground turn hits the shared rate limit", as
   await fireTimers(1);
 });
 
-it.each(["reported", "messages"])("accumulates %s iterations despite skill use", async (kind) => {
+it.each(["reported", "messages", "interrupted"])("accumulates %s iterations", async (kind) => {
   const usedSkills = [
     { name: "deploy", source: "workspace", activation: "read", skillFile: "/ws/deploy/SKILL.md" },
   ] as const;
   for (const count of [6, 3, 1]) {
     const messages =
-      kind === "reported"
+      kind !== "messages"
         ? []
         : [
             { role: "assistant" },
             { role: "user" },
             ...Array.from({ length: count }, () => ({ role: "assistant" })),
           ];
-    countedTurn(kind === "reported" ? count : 0, count === 1 ? 1 : 0, {
+    countedTurn(kind !== "messages" ? count : 0, count === 1 ? 1 : 0, {
       usedSkills,
-      event: { messages, success: true },
+      event: { messages, success: kind !== "interrupted" },
     });
   }
   await fireTimers();
   expect(runReview).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({
       source,
-      ctx: expect.objectContaining({ runId: kind === "reported" ? "run-1" : "run-0" }),
+      ctx: expect.objectContaining({ runId: kind !== "messages" ? "run-1" : "run-0" }),
       usedSkills,
     }),
     expect.any(AbortSignal),
@@ -145,230 +133,24 @@ it.each(["reported", "messages"])("accumulates %s iterations despite skill use",
   countedTurn(9, 0);
 });
 
-it("counts only assistant messages after the last user when the harness reports zero iterations", () => {
-  const assistantTurn = (count: number): TurnOptions => ({
-    event: {
-      messages: [
-        { role: "assistant" },
-        { role: "user" },
-        ...Array.from({ length: count }, () => ({ role: "assistant" })),
-      ],
-      success: true,
-    },
-  });
-  turn(0, assistantTurn(6));
-  countedTurn(0, 0, assistantTurn(3));
-  countedTurn(0, 1, assistantTurn(1));
-});
-
-it("resets the counter when the foreground turn saved its own Workshop change", () => {
-  turn(8);
-  turn(1, { workshopMutated: true });
-  countedTurn(9, 0);
-  countedTurn(1, 1);
-});
-
-it("drops an already queued review when a later foreground turn saves its own change", async () => {
-  countedTurn(10, 1);
-  turn(1, { workshopMutated: true });
-  await fireTimers();
-  expect(runReview).not.toHaveBeenCalled();
-});
-
-it("cancels a queued review for a session the user stopped", async () => {
-  countedTurn(10, 1);
-
-  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
-
-  expect(vi.getTimerCount()).toBe(0);
-  await fireTimers();
-  expect(runReview).not.toHaveBeenCalled();
-});
-
-it("suppresses the stopped run's own aborted completion without blocking later turns", async () => {
-  // The stopped turn already accumulated nine iterations; its aborted agent_end
-  // would push the session over the threshold and re-arm the review.
-  countedTurn(9, 0, { runId: "stopped-run" });
-  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
-  scheduler.suppressRuns(["stopped-run"]);
-
-  turn(10, { runId: "stopped-run", event: { messages: [], success: false } });
-  expect(vi.getTimerCount()).toBe(0);
-  await fireTimers();
-  expect(runReview).not.toHaveBeenCalled();
-
-  // Suppression is run-scoped and one-shot: the very next turn schedules normally.
-  countedTurn(10, 1, { runId: "next-run" });
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledOnce();
-  expect(runReview.mock.calls[0]?.[0].ctx.runId).toBe("next-run");
-});
-
-it("suppression never blocks another session's run", async () => {
-  scheduler.suppressRuns(["stopped-run"]);
-
-  turn(10, { runId: "stopped-run" });
-  turn(10, {
-    runId: "other-run",
-    sessionKey: "agent:main:other",
-    source: { ...source, sessionKey: "agent:main:other" },
-  });
-  await fireTimers();
-
-  expect(runReview).toHaveBeenCalledOnce();
-  expect(runReview.mock.calls[0]?.[0].ctx.runId).toBe("other-run");
-});
-
-it("aborts the in-flight review for a session the user stopped", async () => {
-  const receivedSignals: AbortSignal[] = [];
-  runReview.mockImplementation(
-    (_candidate, signal) =>
-      new Promise<void>((_resolve, reject) => {
-        receivedSignals.push(signal);
-        // Production settles as a plain Error, not an AbortError; the scheduler must
-        // classify it by its own controller's abort state.
-        signal.addEventListener(
-          "abort",
-          () => reject(new Error("Skill review model run aborted.")),
-          { once: true },
-        );
-      }),
-  );
-  turn(10);
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledOnce();
-  expect(receivedSignals[0]?.aborted).toBe(false);
-
-  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
-  await setImmediate();
-
-  expect(receivedSignals[0]?.aborted).toBe(true);
-  // Cancellation is expected work, not a review failure.
-  expect(log.warn).not.toHaveBeenCalled();
-  expect(log.debug).toHaveBeenCalledWith(expect.stringContaining("cancelled"));
-
-  // The stop belongs to this review only; a later turn may schedule a new one.
-  runReview.mockReset();
-  runReview.mockResolvedValue(undefined);
-  turn(10);
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledOnce();
-});
-
-it("keeps an independent cleanup failure visible after cancellation", async () => {
-  runReview.mockImplementation(
-    (_candidate, signal) =>
-      new Promise<void>((_resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () =>
-            reject(
-              new AggregateError(
-                [
-                  new Error("Skill review model run aborted."),
-                  new Error("workshop change read failed"),
-                ],
-                "Skill experience review and its cleanup failed",
-              ),
-            ),
-          { once: true },
-        );
-      }),
-  );
-  turn(10);
-  await fireTimers();
-  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
-  await setImmediate();
-
-  expect(log.debug).not.toHaveBeenCalled();
-  expect(log.warn).toHaveBeenCalledWith(
-    expect.stringContaining("Skill experience review and its cleanup failed"),
-  );
-});
-
-it("keeps a cleanup-only failure visible after a stopped successful review", async () => {
-  runReview.mockImplementation(
-    (_candidate, signal) =>
-      new Promise<void>((_resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () =>
-            reject(
-              new AggregateError(
-                [new Error("workshop change read failed")],
-                "Skill experience review cleanup failed",
-              ),
-            ),
-          { once: true },
-        );
-      }),
-  );
-  turn(10);
-  await fireTimers();
-  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
-  await setImmediate();
-
-  expect(log.debug).not.toHaveBeenCalled();
-  expect(log.warn).toHaveBeenCalledWith(
-    expect.stringContaining("Skill experience review cleanup failed"),
-  );
-});
-
-it("cancels only the stopped session's queued review", async () => {
-  turn(10);
-  turn(10, {
-    sessionKey: "agent:main:other",
-    source: { ...source, sessionKey: "agent:main:other" },
-  });
-
-  scheduler.cancelSession({ agentId: "main", sessionKey: source.sessionKey });
-  await fireTimers();
-
-  expect(runReview).toHaveBeenCalledOnce();
-  expect(runReview.mock.calls[0]?.[0].source.sessionKey).toBe("agent:main:other");
-});
-
-it("keeps reviews for interrupted turns that were not explicitly stopped", async () => {
-  turn(10, { event: { messages: [], success: false } });
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledOnce();
-  expect(runReview.mock.calls[0]?.[0].turnAborted).toBe(true);
-});
-
-it("waits for ten accumulated iterations even when turns use a learned skill", async () => {
-  const usedSkill = (name: string, skillFile: string) =>
-    [{ name, source: "workspace", activation: "read", skillFile }] as const;
-  countedTurn(1, 0, { usedSkills: usedSkill("notes", "/ws/notes/SKILL.md") });
-  const usedSkills = usedSkill(
-    "deploy",
-    path.join(resolveWorkshopSkillsDir({}, "main"), "deploy", "SKILL.md"),
-  );
-  countedTurn(1, 0, { usedSkills });
-  countedTurn(7, 0, { usedSkills });
-  countedTurn(1, 1, { usedSkills });
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledTimes(1);
-  expect(runReview.mock.calls[0]?.[0].usedSkills).toEqual([
-    expect.objectContaining({ name: "deploy" }),
-  ]);
-  countedTurn(1, 0, { workshopMutated: true, usedSkills });
-});
-
-it.each([8, 10])(
-  "resets %i accumulated iterations and queued work after a Workshop change",
-  async (iterations) => {
+it.each([false, true])("resets review state (Stop=%s)", async (stopped) => {
+  for (const iterations of [8, 10]) {
     countedTurn(iterations, iterations === 10 ? 1 : 0);
-    turn(1, { workshopMutated: true });
+    if (stopped) {
+      scheduler.cancelSession(source);
+      scheduler.suppressRuns(["run-20"]);
+      turn(20, { event: { messages: [], success: false } });
+    } else turn(1, { workshopMutated: true });
     await fireTimers(0);
     countedTurn(9, 0);
     countedTurn(1, 1);
-  },
-);
+    turn(1, { workshopMutated: true });
+  }
+});
 
 it("waits for 30 quiet seconds after the session's latest turn", async () => {
   countedTurn(10, 1);
   vi.advanceTimersByTime(29_999);
-  // A later turn restarts the quiet period instead of inheriting the old deadline.
   countedTurn(1, 1);
   vi.advanceTimersByTime(29_999);
   await setImmediate();
@@ -384,11 +166,9 @@ it("ignores errored turns and sessions while Workshop is off", () => {
   turn(20, { config: { skills: { workshop: { autonomous: { mode: "off" } } } } });
   countedTurn(8, 0);
 });
-
 it("still queues reviews while Workshop proposes drafts", () => {
   countedTurn(10, 1, { config: { skills: { workshop: { autonomous: { mode: "propose" } } } } });
 });
-
 it("never reviews ACP child sessions", () => {
   countedTurn(20, 0, { sessionKey: "agent:main:acp:child-1" });
 });

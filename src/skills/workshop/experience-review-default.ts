@@ -55,19 +55,6 @@ export function scheduleSkillExperienceReview(
     });
 }
 
-/** Drops queued and in-flight Experience Review work for one explicitly stopped session. */
-function cancelSkillExperienceReviewForSession(params: {
-  agentId: string;
-  sessionKey: string;
-}): void {
-  defaultScheduler.cancelSession(params);
-}
-
-/** Ignores the stopped runs' own aborted completions; later turns still schedule. */
-function suppressSkillExperienceReviewRuns(runIds: Iterable<string>): void {
-  defaultScheduler.suppressRuns(runIds);
-}
-
 /**
  * Explicit Stop bridge: drops every stopped session's queued review, aborts its in-flight
  * review, and suppresses the stopped runs until their own aborted completions arrive.
@@ -83,7 +70,7 @@ export function stopSkillExperienceReview(params: {
       continue;
     }
     try {
-      cancelSkillExperienceReviewForSession({
+      defaultScheduler.cancelSession({
         agentId: session.agentId,
         sessionKey: session.sessionKey,
       });
@@ -92,7 +79,7 @@ export function stopSkillExperienceReview(params: {
     }
   }
   try {
-    suppressSkillExperienceReviewRuns(params.runIds);
+    defaultScheduler.suppressRuns(params.runIds);
   } catch (error) {
     log.warn(`skill experience review suppression failed: ${formatErrorMessage(error)}`);
   }

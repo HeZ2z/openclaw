@@ -137,7 +137,7 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
   // Explicit stop happens before the stopped turn aborts, and its own agent_end
   // still arrives as an aborted completion. Suppress that exact run once instead
   // of keeping a session-level block that would starve later turns.
-  const stoppedRunIds = new Map<string, number>();
+  const stoppedRunIds = new Map<string, true>();
   let reviewInFlight = false;
   let inFlightKey: string | undefined;
   let inFlightController: AbortController | undefined;
@@ -240,11 +240,10 @@ export function createSkillExperienceReviewScheduler(deps: ExperienceReviewSched
    * schedules normally; the bounded map only guards against a completion that never comes.
    */
   const suppressRuns = (runIds: Iterable<string>): void => {
-    const nowMs = Date.now();
     for (const runId of runIds) {
       const normalized = runId.trim();
       if (normalized) {
-        stoppedRunIds.set(normalized, nowMs);
+        stoppedRunIds.set(normalized, true);
       }
     }
     pruneMapToMaxSize(stoppedRunIds, EXPERIENCE_REVIEW_MAX_SUPPRESSED_RUNS);

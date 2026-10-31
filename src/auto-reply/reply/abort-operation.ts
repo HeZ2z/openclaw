@@ -249,17 +249,6 @@ function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): Ch
   };
 }
 
-/**
- * Explicit Stop cancels background learning for every stopped conversation and suppresses the
- * stopped run ids until their own aborted completions arrive.
- */
-function cancelSkillExperienceReviewForStoppedCapture(capture: ChannelStopCapture): void {
-  stopSkillExperienceReview({
-    sessions: capture.reviewTargets,
-    runIds: capture.requestRunIds,
-  });
-}
-
 /** Scope adapter only: cancellation and acceptance belong to the captured Stop kernel. */
 export function abortSessionRunTargetWithOutcome(params: {
   capture: ChannelStopCapture | (() => ChannelStopCapture);
@@ -327,7 +316,7 @@ export function abortSessionRunTargetWithOutcome(params: {
       const capture = resolveCapture();
       // The Stop kernel calls afterQueued only after revalidating the captured Stop's live
       // target, so review cancellation cannot outrun a rejected foreground cancellation.
-      cancelSkillExperienceReviewForStoppedCapture(capture);
+      stopSkillExperienceReview({ sessions: capture.reviewTargets, runIds: capture.requestRunIds });
       for (const retirement of capture.idleMcpRetirements) {
         trackRetirement(retirement.sessionId, () =>
           retirement.retire(() => params.assertCurrent?.()),
