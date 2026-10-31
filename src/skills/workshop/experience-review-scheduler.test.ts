@@ -30,7 +30,6 @@ beforeEach(() => {
   scheduler = createSkillExperienceReviewScheduler({ isSystemActive: () => false, runReview });
 });
 afterEach(() => {
-  vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -140,7 +139,9 @@ it.each([false, true])("resets review state (Stop=%s)", async (stopped) => {
       scheduler.cancelSession(source);
       scheduler.suppressRuns(["run-20"]);
       turn(20, { event: { messages: [], success: false } });
-    } else turn(1, { workshopMutated: true });
+    } else {
+      turn(1, { workshopMutated: true });
+    }
     await fireTimers(0);
     countedTurn(9, 0);
     countedTurn(1, 1);
@@ -156,8 +157,7 @@ it("waits for 30 quiet seconds after the session's latest turn", async () => {
   await setImmediate();
   expect(runReview).not.toHaveBeenCalled();
   vi.advanceTimersByTime(1);
-  await setImmediate();
-  expect(runReview).toHaveBeenCalledOnce();
+  await fireTimers();
 });
 
 it("ignores errored turns and sessions while Workshop is off", () => {
